@@ -7,6 +7,11 @@ function checkTelegramSecret(req, res, next) {
   const receivedSecret = req.headers['x-telegram-bot-api-secret-token']
 
   if (expectedSecret && receivedSecret !== expectedSecret) {
+    console.log('INVALID TELEGRAM SECRET:', {
+      expected: Boolean(expectedSecret),
+      received: receivedSecret,
+    })
+
     return res.status(403).json({
       success: false,
       error: 'INVALID_TELEGRAM_SECRET',
@@ -37,6 +42,12 @@ async function sendTelegramMessage(chatId, text) {
 
   const data = await response.json().catch(() => null)
 
+  console.log('SEND MESSAGE RESULT:', {
+    status: response.status,
+    ok: data?.ok,
+    description: data?.description,
+  })
+
   if (!response.ok || !data?.ok) {
     throw new Error(data?.description || 'TELEGRAM_SEND_FAILED')
   }
@@ -48,6 +59,8 @@ router.post('/webhook', checkTelegramSecret, async (req, res) => {
   try {
     const update = req.body || {}
 
+    console.log('TELEGRAM UPDATE:', JSON.stringify(update, null, 2))
+
     const message =
       update.message ||
       update.edited_message ||
@@ -56,6 +69,11 @@ router.post('/webhook', checkTelegramSecret, async (req, res) => {
 
     const chatId = message?.chat?.id
     const text = message?.text || ''
+
+    console.log('TELEGRAM MESSAGE:', {
+      chatId,
+      text,
+    })
 
     if (!chatId) {
       return res.json({ ok: true })
