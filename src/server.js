@@ -33,7 +33,6 @@ const corsOptions = {
 }
 
 app.use(helmet())
-app.use('/api/telegram', telegramRoutes)
 
 
 app.use(cors(corsOptions))
@@ -41,6 +40,7 @@ app.options(/.*/, cors(corsOptions))
 
 app.use(express.json({ limit: '1mb' }))
 
+app.use('/api/telegram', telegramRoutes)
 app.use('/api/referrals', referralsRoutes)
 
 app.use(
