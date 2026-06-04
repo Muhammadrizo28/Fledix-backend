@@ -16,6 +16,7 @@ const telegramRoutes = require('./routes/telegram.routes')
 
 const { errorHandler } = require('./middleware/errorHandler')
 const referralsRoutes = require('./routes/referrals.routes')
+const telegramUserRoutes = require('./routes/telegramUser.routes')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -42,6 +43,7 @@ app.use(express.json({ limit: '1mb' }))
 
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/referrals', referralsRoutes)
+app.use('/api/telegram-user', telegramUserRoutes)
 
 app.use(
   rateLimit({
