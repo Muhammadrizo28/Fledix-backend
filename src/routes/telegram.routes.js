@@ -59,7 +59,6 @@ router.post('/webhook', checkTelegramSecret, async (req, res) => {
   try {
     const update = req.body || {}
 
-    console.log('TELEGRAM UPDATE:', JSON.stringify(update, null, 2))
 
     const message =
       update.message ||
@@ -70,10 +69,6 @@ router.post('/webhook', checkTelegramSecret, async (req, res) => {
     const chatId = message?.chat?.id
     const text = message?.text || ''
 
-    console.log('TELEGRAM MESSAGE:', {
-      chatId,
-      text,
-    })
 
     if (!chatId) {
       return res.json({ ok: true })
