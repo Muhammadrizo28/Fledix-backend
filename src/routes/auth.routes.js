@@ -40,16 +40,7 @@ function normalizeNickname(nickname) {
     .toLowerCase()
     .replace(/\s+/g, '')
 }
-function normalizeTelegramUsername(username, telegramId) {
-  const cleanUsername = String(username || '')
-    .trim()
-    .replace(/^@+/, '')
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .slice(0, 40)
 
-  return cleanUsername || `tg_${telegramId}`
-}
 
 function normalizeTelegramUsername(username, telegramId) {
   const cleanUsername = String(username || '')
