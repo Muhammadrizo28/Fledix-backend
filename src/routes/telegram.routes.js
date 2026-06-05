@@ -7,11 +7,6 @@ function checkTelegramSecret(req, res, next) {
   const receivedSecret = req.headers['x-telegram-bot-api-secret-token']
 
   if (expectedSecret && receivedSecret !== expectedSecret) {
-    console.log('INVALID TELEGRAM SECRET:', {
-      expected: Boolean(expectedSecret),
-      received: receivedSecret,
-    })
-
     return res.status(403).json({
       success: false,
       error: 'INVALID_TELEGRAM_SECRET',
@@ -42,11 +37,7 @@ async function sendTelegramMessage(chatId, text) {
 
   const data = await response.json().catch(() => null)
 
-  console.log('SEND MESSAGE RESULT:', {
-    status: response.status,
-    ok: data?.ok,
-    description: data?.description,
-  })
+  
 
   if (!response.ok || !data?.ok) {
     throw new Error(data?.description || 'TELEGRAM_SEND_FAILED')
