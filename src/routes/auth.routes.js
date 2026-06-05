@@ -40,6 +40,27 @@ function normalizeNickname(nickname) {
     .toLowerCase()
     .replace(/\s+/g, '')
 }
+function normalizeTelegramUsername(username, telegramId) {
+  const cleanUsername = String(username || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .slice(0, 40)
+
+  return cleanUsername || `tg_${telegramId}`
+}
+
+function normalizeTelegramUsername(username, telegramId) {
+  const cleanUsername = String(username || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .slice(0, 40)
+
+  return cleanUsername || `tg_${telegramId}`
+}
 
 function publicUser(user) {
   return {
@@ -788,18 +809,37 @@ router.post('/telegram', validateBody(telegramSchema), async (req, res) => {
     const telegramUser = result.user
     const telegramId = String(telegramUser.id)
 
+    const telegramNickname = normalizeTelegramUsername(
+      telegramUser.username,
+      telegramId
+    )
+
     const existingUser = await getUserByTelegramId(telegramId)
 
     if (existingUser) {
       const { data: updatedUser, error } = await supabase
         .from('users')
         .update({
-          username: telegramUser.username || existingUser.username || '',
+          telegram_id: telegramId,
+
+          username: telegramNickname,
+          app_nickname: telegramNickname,
+          telegram_username: telegramNickname,
+
           first_name: telegramUser.first_name || existingUser.first_name || '',
           last_name: telegramUser.last_name || existingUser.last_name || '',
+
+          display_name:
+            telegramUser.first_name ||
+            telegramNickname ||
+            existingUser.display_name ||
+            `Telegram ${telegramId}`,
+
           telegram_avatar_url:
             telegramUser.photo_url || existingUser.telegram_avatar_url || '',
+
           auth_provider: existingUser.email ? 'mixed' : 'telegram',
+          updated_at: new Date().toISOString(),
         })
         .eq('id', existingUser.id)
         .select()
@@ -825,13 +865,19 @@ router.post('/telegram', validateBody(telegramSchema), async (req, res) => {
       .from('users')
       .insert({
         telegram_id: telegramId,
-        username: telegramUser.username || '',
+
+        username: telegramNickname,
+        app_nickname: telegramNickname,
+        telegram_username: telegramNickname,
+
         first_name: telegramUser.first_name || '',
         last_name: telegramUser.last_name || '',
+
         display_name:
           telegramUser.first_name ||
-          telegramUser.username ||
+          telegramNickname ||
           `Telegram ${telegramId}`,
+
         telegram_avatar_url: telegramUser.photo_url || '',
         auth_provider: 'telegram',
       })

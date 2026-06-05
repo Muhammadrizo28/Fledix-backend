@@ -65,6 +65,17 @@ function verifyTelegramInitData(initData) {
   }
 }
 
+function normalizeTelegramUsername(username, telegramId) {
+  const cleanUsername = String(username || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .slice(0, 40)
+
+  return cleanUsername || `tg_${telegramId}`
+}
+
 router.post('/link', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id
@@ -80,20 +91,36 @@ router.post('/link', authMiddleware, async (req, res) => {
     }
 
     const telegramUser = verified.user
+    const telegramId = String(telegramUser.id)
+
+    const telegramNickname = normalizeTelegramUsername(
+      telegramUser.username,
+      telegramId
+    )
 
     const { data, error } = await supabase
       .from('users')
       .update({
-        telegram_id: String(telegramUser.id),
-        telegram_username: telegramUser.username || null,
+        telegram_id: telegramId,
+
+        username: telegramNickname,
+        app_nickname: telegramNickname,
+        telegram_username: telegramNickname,
+
+        first_name: telegramUser.first_name || '',
+        last_name: telegramUser.last_name || '',
+
         telegram_first_name: telegramUser.first_name || null,
         telegram_last_name: telegramUser.last_name || null,
+
+        telegram_avatar_url: telegramUser.photo_url || '',
         telegram_photo_url: telegramUser.photo_url || null,
+
         updated_at: new Date().toISOString(),
       })
       .eq('id', userId)
       .select(
-        'id, telegram_id, telegram_username, telegram_first_name, telegram_last_name, telegram_photo_url'
+        'id, username, app_nickname, telegram_id, telegram_username, first_name, last_name, telegram_first_name, telegram_last_name, telegram_avatar_url, telegram_photo_url'
       )
       .single()
 
