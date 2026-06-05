@@ -27,8 +27,11 @@ const corsOptions = {
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://192.168.0.23:5173',
+
+    'https://fledix.app',
+    'https://www.fledix.app',
   ],
-  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }
