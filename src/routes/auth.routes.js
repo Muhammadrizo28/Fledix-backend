@@ -779,6 +779,110 @@ router.post(
     }
   }
 )
+async function attachPendingReferralAfterTelegramLogin(user) {
+  if (!user?.id || !user?.telegram_id) return
+
+  const telegramId = String(user.telegram_id)
+
+  const { data: pendingReferral, error: pendingError } = await supabase
+    .from('pending_telegram_referrals')
+    .select('id, referral_code, used')
+    .eq('telegram_id', telegramId)
+    .eq('used', false)
+    .maybeSingle()
+
+  if (pendingError || !pendingReferral) return
+
+  const referralCode = String(pendingReferral.referral_code || '').trim()
+
+  if (!referralCode) return
+
+  const { data: inviter, error: inviterError } = await supabase
+    .from('users')
+    .select('id, referral_code')
+    .eq('referral_code', referralCode)
+    .maybeSingle()
+
+  if (inviterError || !inviter) return
+
+  if (inviter.id === user.id) {
+    await supabase
+      .from('pending_telegram_referrals')
+      .update({
+        used: true,
+      })
+      .eq('id', pendingReferral.id)
+
+    return
+  }
+
+  const { data: existingReferral } = await supabase
+    .from('user_referrals')
+    .select('id')
+    .eq('invited_user_id', user.id)
+    .maybeSingle()
+
+  if (existingReferral) {
+    await supabase
+      .from('pending_telegram_referrals')
+      .update({
+        used: true,
+      })
+      .eq('id', pendingReferral.id)
+
+    return
+  }
+
+  const { data: tasks, error: tasksError } = await supabase
+    .from('tasks')
+    .select('id, completed, done')
+    .eq('user_id', user.id)
+
+  if (tasksError) return
+
+  const totalTasks = Array.isArray(tasks) ? tasks.length : 0
+
+  const completedTasks = Array.isArray(tasks)
+    ? tasks.filter((task) => {
+        if (task.completed) return true
+
+        const done = Array.isArray(task.done) ? task.done : []
+
+        return done.length > 0
+      }).length
+    : 0
+
+  const qualified = totalTasks >= 3 && completedTasks >= 2
+
+  const { error: insertError } = await supabase
+    .from('user_referrals')
+    .insert({
+      inviter_user_id: inviter.id,
+      invited_user_id: user.id,
+      referral_code: referralCode,
+
+      status: qualified ? 'qualified' : 'pending',
+      total_tasks: totalTasks,
+      completed_tasks: completedTasks,
+      qualified_at: qualified ? new Date().toISOString() : null,
+    })
+
+  if (insertError) return
+
+  if (qualified) {
+    await supabase.rpc('increment_friend_invite_balance', {
+      p_user_id: inviter.id,
+      p_amount: 1,
+    })
+  }
+
+  await supabase
+    .from('pending_telegram_referrals')
+    .update({
+      used: true,
+    })
+    .eq('id', pendingReferral.id)
+}
 
 router.post('/telegram', validateBody(telegramSchema), async (req, res) => {
   try {
@@ -831,6 +935,8 @@ router.post('/telegram', validateBody(telegramSchema), async (req, res) => {
         })
       }
 
+      await attachPendingReferralAfterTelegramLogin(updatedUser)
+
       const token = createToken(updatedUser)
 
       return res.json({
@@ -868,6 +974,8 @@ router.post('/telegram', validateBody(telegramSchema), async (req, res) => {
         error: error.message,
       })
     }
+
+    await attachPendingReferralAfterTelegramLogin(user)
 
     const token = createToken(user)
 
