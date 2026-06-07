@@ -96,11 +96,9 @@ async function getRegularTaskCount(userId) {
 function sendRegularTaskLimitError(res, payload = {}) {
   return res.status(409).json({
     success: false,
-
     error: REGULAR_TASK_LIMIT_ERROR,
     key: REGULAR_TASK_LIMIT_ERROR,
     code: REGULAR_TASK_LIMIT_ERROR,
-
     message: 'Regular task limit reached.',
     ...payload,
   })
@@ -111,7 +109,7 @@ const createTaskSchema = z.object({
   description: z.string().max(1000).optional().default(''),
   tag: z.string().max(100).optional().default(''),
   date: z.string().max(20).optional().default(''),
-  time: z.string().max(20).optional().default(''),
+  time: z.string().max(30).optional().default(''),
 
   repeat: z.array(z.any()).optional().default([]),
 
@@ -129,7 +127,7 @@ const updateTaskSchema = z.object({
   description: z.string().max(1000).optional(),
   tag: z.string().max(100).optional(),
   date: z.string().max(20).optional(),
-  time: z.string().max(20).optional(),
+  time: z.string().max(30).optional(),
 
   repeat: z.array(z.any()).optional(),
 
@@ -159,7 +157,7 @@ router.get('/', authMiddleware, async (req, res) => {
     })
   }
 
-  res.json({
+  return res.json({
     success: true,
     tasks: data,
   })
@@ -233,7 +231,6 @@ router.post(
         done,
         frozen,
         completed,
-
         challenge_type: null,
         challenge_status: null,
       })
@@ -247,13 +244,25 @@ router.post(
       })
     }
 
-    rebuildTaskNotifications(data.id).catch((notificationError) => {
-      console.error('Create task notification rebuild error:', notificationError)
-    })
+    let notificationResult = null
 
-    res.json({
+    try {
+      notificationResult = await rebuildTaskNotifications(data.id)
+      console.log('CREATE TASK NOTIFICATION RESULT:', notificationResult)
+    } catch (notificationError) {
+      console.error('Create task notification rebuild error:', notificationError)
+
+      notificationResult = {
+        success: false,
+        reason: 'REBUILD_THROW_ERROR',
+        error: notificationError.message,
+      }
+    }
+
+    return res.json({
       success: true,
       task: data,
+      notificationResult,
       taskLimit: {
         limit: taskLimit,
         currentCount: taskCountResult.count + 1,
@@ -317,13 +326,25 @@ router.patch(
       })
     }
 
-    rebuildTaskNotifications(data.id).catch((notificationError) => {
-      console.error('Update task notification rebuild error:', notificationError)
-    })
+    let notificationResult = null
 
-    res.json({
+    try {
+      notificationResult = await rebuildTaskNotifications(data.id)
+      console.log('UPDATE TASK NOTIFICATION RESULT:', notificationResult)
+    } catch (notificationError) {
+      console.error('Update task notification rebuild error:', notificationError)
+
+      notificationResult = {
+        success: false,
+        reason: 'REBUILD_THROW_ERROR',
+        error: notificationError.message,
+      }
+    }
+
+    return res.json({
       success: true,
       task: data,
+      notificationResult,
     })
   }
 )
@@ -345,11 +366,13 @@ router.delete('/:taskId', authMiddleware, async (req, res) => {
     })
   }
 
-  clearPendingTaskNotifications(taskId).catch((notificationError) => {
+  try {
+    await clearPendingTaskNotifications(taskId)
+  } catch (notificationError) {
     console.error('Delete task notification clear error:', notificationError)
-  })
+  }
 
-  res.json({
+  return res.json({
     success: true,
   })
 })
@@ -426,7 +449,7 @@ router.patch('/:taskId/done', authMiddleware, async (req, res) => {
     }
   }
 
-  res.json({
+  return res.json({
     success: true,
     task: updatedTask,
     checked: !alreadyDone,

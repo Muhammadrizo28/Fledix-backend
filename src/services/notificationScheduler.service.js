@@ -17,28 +17,47 @@ let isProcessing = false
 function parseDateParts(dateText) {
   if (!dateText) return null
 
-  const parts = String(dateText).split('/').map(Number)
+  const text = String(dateText).trim()
 
-  if (parts.length !== 3) return null
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) {
+    const [day, month, year] = text.split('/').map(Number)
+    return { day, month, year }
+  }
 
-  const [day, month, year] = parts
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [year, month, day] = text.split('-').map(Number)
+    return { day, month, year }
+  }
 
-  if (!day || !month || !year) return null
-
-  return { day, month, year }
+  return null
 }
 
 function parseTimeParts(timeText) {
   if (!timeText) return null
 
-  const clean = String(timeText).trim()
+  const text = String(timeText).trim()
 
-  const match = clean.match(/^(\d{1,2}):(\d{2})$/)
+  const amPmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
 
-  if (!match) return null
+  if (amPmMatch) {
+    let hour = Number(amPmMatch[1])
+    const minute = Number(amPmMatch[2])
+    const period = amPmMatch[3].toUpperCase()
 
-  const hour = Number(match[1])
-  const minute = Number(match[2])
+    if (period === 'PM' && hour !== 12) hour += 12
+    if (period === 'AM' && hour === 12) hour = 0
+
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+
+    return { hour, minute }
+  }
+
+  const normalMatch = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
+
+  if (!normalMatch) return null
+
+  const hour = Number(normalMatch[1])
+  const minute = Number(normalMatch[2])
 
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
 
@@ -55,7 +74,6 @@ function formatDate(dateObject) {
 
 function getWeekName(dateObject) {
   const names = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
-
   return names[dateObject.getDay()]
 }
 
@@ -179,7 +197,7 @@ function getNextStartSendAt(task, userTimezone) {
     }
   }
 
-  for (let i = 0; i < 30; i += 1) {
+  for (let i = 0; i < 60; i += 1) {
     const candidate = new Date(startDate)
     candidate.setDate(startDate.getDate() + i)
 
@@ -216,11 +234,11 @@ async function clearPendingTaskNotifications(taskId) {
 }
 
 async function rebuildTaskNotifications(taskId) {
-  console.log('🔔 REBUILD START:', taskId)
-
   if (!taskId) {
-    console.log('❌ NO TASK ID')
-    return
+    return {
+      success: false,
+      reason: 'NO_TASK_ID',
+    }
   }
 
   await clearPendingTaskNotifications(taskId)
@@ -243,37 +261,54 @@ async function rebuildTaskNotifications(taskId) {
     .eq('id', taskId)
     .single()
 
-  console.log('🔔 TASK:', task)
-  console.log('🔔 TASK ERROR:', taskError)
-
   if (taskError || !task) {
-    console.log('❌ TASK NOT FOUND')
-    return
+    return {
+      success: false,
+      reason: 'TASK_NOT_FOUND',
+      error: taskError?.message,
+    }
   }
 
   if (!task.time) {
-    console.log('❌ NO TASK TIME:', task.time)
-    return
+    return {
+      success: false,
+      reason: 'NO_TASK_TIME',
+      task,
+    }
   }
 
-  if (!task.date) {
-    console.log('❌ NO TASK DATE:', task.date)
-    return
+  const repeat = Array.isArray(task.repeat) ? task.repeat : []
+
+  if (!task.date && repeat.length === 0) {
+    return {
+      success: false,
+      reason: 'NO_TASK_DATE_AND_NO_REPEAT',
+      task,
+    }
   }
 
   if (task.frozen) {
-    console.log('❌ TASK FROZEN')
-    return
+    return {
+      success: false,
+      reason: 'TASK_FROZEN',
+      task,
+    }
   }
 
   if (task.completed) {
-    console.log('❌ TASK COMPLETED')
-    return
+    return {
+      success: false,
+      reason: 'TASK_COMPLETED',
+      task,
+    }
   }
 
   if (task.challenge_type === 'friend') {
-    console.log('❌ FRIEND CHALLENGE TASK')
-    return
+    return {
+      success: false,
+      reason: 'FRIEND_CHALLENGE_TASK',
+      task,
+    }
   }
 
   const { data: user, error: userError } = await supabase
@@ -291,36 +326,47 @@ async function rebuildTaskNotifications(taskId) {
     .eq('id', task.user_id)
     .single()
 
-  console.log('🔔 USER:', user)
-  console.log('🔔 USER ERROR:', userError)
-
   if (userError || !user) {
-    console.log('❌ USER NOT FOUND')
-    return
+    return {
+      success: false,
+      reason: 'USER_NOT_FOUND',
+      error: userError?.message,
+    }
   }
 
   if (!user.telegram_id) {
-    console.log('❌ NO TELEGRAM ID')
-    return
+    return {
+      success: false,
+      reason: 'NO_TELEGRAM_ID',
+      user,
+    }
   }
 
-  if (!user.notifications_enabled) {
-    console.log('❌ NOTIFICATIONS DISABLED')
-    return
+  if (user.notifications_enabled === false) {
+    return {
+      success: false,
+      reason: 'NOTIFICATIONS_DISABLED',
+      user,
+    }
   }
 
-  if (!user.notify_task_start) {
-    console.log('❌ TASK START NOTIFICATIONS DISABLED')
-    return
+  if (user.notify_task_start === false) {
+    return {
+      success: false,
+      reason: 'TASK_START_NOTIFICATIONS_DISABLED',
+      user,
+    }
   }
 
   const sendAt = getNextStartSendAt(task, user.timezone || DEFAULT_TIMEZONE)
 
-  console.log('🔔 SEND AT:', sendAt)
-
   if (!sendAt) {
-    console.log('❌ SEND AT IS NULL. CHECK DATE/TIME FORMAT OR PAST TIME.')
-    return
+    return {
+      success: false,
+      reason: 'SEND_AT_NULL_DATE_TIME_INVALID_OR_PAST',
+      task,
+      timezone: user.timezone || DEFAULT_TIMEZONE,
+    }
   }
 
   const { data: insertedNotification, error: insertError } = await supabase
@@ -335,15 +381,19 @@ async function rebuildTaskNotifications(taskId) {
     .select()
     .single()
 
-  console.log('🔔 INSERTED NOTIFICATION:', insertedNotification)
-  console.log('🔔 INSERT ERROR:', insertError)
-
   if (insertError) {
-    console.error('❌ CREATE TASK NOTIFICATION ERROR:', insertError.message)
-    return
+    return {
+      success: false,
+      reason: 'INSERT_NOTIFICATION_FAILED',
+      error: insertError.message,
+    }
   }
 
-  console.log('✅ TASK NOTIFICATION CREATED')
+  return {
+    success: true,
+    reason: 'TASK_NOTIFICATION_CREATED',
+    notification: insertedNotification,
+  }
 }
 
 function getTaskStartMessage({ task, user }) {
@@ -409,8 +459,8 @@ async function processNotification(notification) {
 
   if (
     !user.telegram_id ||
-    !user.notifications_enabled ||
-    !user.notify_task_start ||
+    user.notifications_enabled === false ||
+    user.notify_task_start === false ||
     task.frozen ||
     task.completed
   ) {
@@ -490,7 +540,11 @@ async function rebuildAllPendingTaskNotifications() {
   }
 
   for (const task of tasks || []) {
-    await rebuildTaskNotifications(task.id)
+    const result = await rebuildTaskNotifications(task.id)
+
+    if (!result?.success) {
+      console.log('Rebuild existing task notification skipped:', result)
+    }
   }
 }
 
