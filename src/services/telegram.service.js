@@ -106,9 +106,17 @@ async function editTelegramMessageText({
   return telegramRequest('editMessageText', payload)
 }
 
+async function deleteTelegramMessage({ chatId, messageId }) {
+  return telegramRequest('deleteMessage', {
+    chat_id: chatId,
+    message_id: messageId,
+  })
+}
+
 module.exports = {
   sendTelegramMessage,
   answerCallbackQuery,
   editTelegramMessageReplyMarkup,
   editTelegramMessageText,
+  deleteTelegramMessage,
 }

@@ -6,6 +6,7 @@ const {
   sendTelegramMessage,
   answerCallbackQuery,
   editTelegramMessageReplyMarkup,
+  deleteTelegramMessage,
 } = require('../services/telegram.service')
 
 const {
@@ -345,12 +346,13 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
 
   if (currentDone.includes(doneDate)) {
     if (chatId && messageId) {
-      await editTelegramMessageReplyMarkup({
-        chatId,
-        messageId,
-        replyMarkup: null,
-      }).catch(() => null)
-    }
+  await deleteTelegramMessage({
+    chatId,
+    messageId,
+  }).catch((error) => {
+    console.error('DELETE TELEGRAM TASK MESSAGE ERROR:', error.message)
+  })
+}
 
     if (chatId) {
       await sendTelegramMessage({
