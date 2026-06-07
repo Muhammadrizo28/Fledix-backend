@@ -288,6 +288,59 @@ function serializeStreak(row) {
   }
 }
 
+
+router.get('/users', authMiddleware, async (req, res) => {
+  try {
+    const ids = String(req.query.ids || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+
+    if (ids.length === 0) {
+      return res.json({
+        success: true,
+        streaks: [],
+        streakMap: {},
+      })
+    }
+
+    const uniqueIds = [...new Set(ids)].slice(0, 50)
+
+    const { data, error } = await supabase
+      .from('user_streaks')
+      .select('user_id, streak, last_date, frozen')
+      .in('user_id', uniqueIds)
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'STREAKS_LOAD_FAILED',
+      })
+    }
+
+    const streakMap = {}
+
+    uniqueIds.forEach((id) => {
+      streakMap[id] = 0
+    })
+
+    ;(data || []).forEach((item) => {
+      streakMap[item.user_id] = Number(item.streak || 0)
+    })
+
+    return res.json({
+      success: true,
+      streaks: data || [],
+      streakMap,
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'STREAKS_LOAD_FAILED',
+    })
+  }
+})
+
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id
