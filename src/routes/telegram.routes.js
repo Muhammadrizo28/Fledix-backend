@@ -146,7 +146,7 @@ function parseCallbackData(data) {
   const text = String(data || '').trim()
   const parts = text.split(':')
 
-  if (parts[0] === 'task_done') {
+  if (parts[0] === 'task_done' || parts[0] === 'done') {
     return {
       type: 'task_done',
       taskId: parts[1],
@@ -154,25 +154,18 @@ function parseCallbackData(data) {
     }
   }
 
-  if (parts[0] === 'done') {
-    return {
-      type: 'task_done',
-      taskId: parts[1],
-      doneDate: parts[2],
-    }
-  }
-
-  if (parts[0] === 'task_extend') {
+  if (parts[0] === 'task_extend' || parts[0] === 'extend') {
     return {
       type: 'task_extend',
       taskId: parts[1],
     }
   }
 
-  if (parts[0] === 'extend') {
+  if (parts[0] === 'focus_start') {
     return {
-      type: 'task_extend',
-      taskId: parts[1],
+      type: 'focus_start',
+      mode: parts[1] === 'break' ? 'break' : 'work',
+      durationSeconds: Math.max(1, Number(parts[2] || 0)),
     }
   }
 
@@ -349,11 +342,6 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .eq('user_id', user.id)
     .single()
 
-  console.log('TELEGRAM DONE TASK LOOKUP:', {
-    found: Boolean(task),
-    error: taskError?.message,
-  })
-
   if (taskError || !task) {
     if (chatId) {
       await sendTelegramMessage({
@@ -404,11 +392,6 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .eq('user_id', user.id)
     .select()
     .single()
-
-  console.log('TELEGRAM DONE UPDATE RESULT:', {
-    success: Boolean(updatedTask),
-    error: updateError?.message,
-  })
 
   if (updateError || !updatedTask) {
     if (chatId) {
@@ -588,6 +571,90 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
   })
 }
 
+async function handleFocusStartCallback({ callbackQuery, parsed }) {
+  const callbackQueryId = callbackQuery.id
+  const telegramId = String(callbackQuery.from?.id || '')
+
+  const message = callbackQuery.message || {}
+  const chatId = message.chat?.id
+  const messageId = message.message_id
+
+  const user = await getUserByTelegramId(telegramId)
+
+  if (!user) {
+    await safeAnswerCallbackQuery({
+      callbackQueryId,
+      text: 'User not found.',
+      showAlert: true,
+    })
+
+    return
+  }
+
+  const mode = parsed.mode === 'break' ? 'break' : 'work'
+  const durationSeconds = Math.max(1, Number(parsed.durationSeconds || 0))
+
+  if (!durationSeconds) {
+    await safeAnswerCallbackQuery({
+      callbackQueryId,
+      text: 'Invalid timer duration.',
+      showAlert: true,
+    })
+
+    return
+  }
+
+  const { error } = await supabase.from('focus_timer_commands').insert({
+    user_id: user.id,
+    mode,
+    duration_seconds: durationSeconds,
+    consumed: false,
+    source: 'telegram',
+  })
+
+  if (error) {
+    console.error('FOCUS_START_COMMAND_INSERT_ERROR:', error)
+
+    await safeAnswerCallbackQuery({
+      callbackQueryId,
+      text:
+        user.language === 'ru'
+          ? 'Не получилось запустить таймер.'
+          : 'Failed to start timer.',
+      showAlert: true,
+    })
+
+    return
+  }
+
+  await safeAnswerCallbackQuery({
+    callbackQueryId,
+    text:
+      user.language === 'ru'
+        ? 'Таймер запускается в приложении ✅'
+        : 'Timer will start in the app ✅',
+    showAlert: false,
+  })
+
+  if (chatId && messageId) {
+    const modeText = mode === 'work' ? 'work' : 'break'
+
+    await editTelegramMessageText({
+      chatId,
+      messageId,
+      text:
+        user.language === 'ru'
+          ? `▶️ ${modeText} timer started in Fledix.`
+          : `▶️ ${modeText} timer started in Fledix.`,
+      replyMarkup: {
+        inline_keyboard: [],
+      },
+    }).catch((editError) => {
+      console.error('FOCUS_START_MESSAGE_EDIT_ERROR:', editError.message)
+    })
+  }
+}
+
 async function handleCallbackQuery(callbackQuery) {
   console.log('TELEGRAM CALLBACK RECEIVED:', {
     id: callbackQuery.id,
@@ -616,6 +683,15 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (parsed?.type === 'task_extend') {
     await handleTaskExtendCallback({
+      callbackQuery,
+      parsed,
+    })
+
+    return
+  }
+
+  if (parsed?.type === 'focus_start') {
+    await handleFocusStartCallback({
       callbackQuery,
       parsed,
     })
