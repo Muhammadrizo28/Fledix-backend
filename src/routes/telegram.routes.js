@@ -18,22 +18,6 @@ const {
 
 const router = express.Router()
 
-function checkTelegramSecret(req, res, next) {
-  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET
-  const receivedSecret = req.headers['x-telegram-bot-api-secret-token']
-
-  if (expectedSecret && receivedSecret !== expectedSecret) {
-    console.error('INVALID_TELEGRAM_SECRET')
-
-    return res.status(403).json({
-      success: false,
-      error: 'INVALID_TELEGRAM_SECRET',
-    })
-  }
-
-  next()
-}
-
 function cleanReferralCode(value) {
   const text = String(value || '').trim()
 
@@ -268,6 +252,8 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
 
   const user = await getUserByTelegramId(telegramId)
 
+  console.log('TELEGRAM DONE USER:', user)
+
   if (!user) {
     await answerCallbackQuery({
       callbackQueryId,
@@ -298,8 +284,8 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .single()
 
   console.log('TELEGRAM DONE TASK LOOKUP:', {
-    found: Boolean(task),
-    error: taskError?.message,
+    task,
+    taskError,
   })
 
   if (taskError || !task) {
@@ -362,8 +348,8 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .single()
 
   console.log('TELEGRAM DONE UPDATE RESULT:', {
-    success: Boolean(updatedTask),
-    error: updateError?.message,
+    updatedTask,
+    updateError,
   })
 
   if (updateError || !updatedTask) {
@@ -597,24 +583,49 @@ router.post('/webhook', async (req, res) => {
   try {
     const update = req.body || {}
 
+    console.log('TELEGRAM WEBHOOK UPDATE:', JSON.stringify(update))
+
     if (update.callback_query) {
+      console.log('TELEGRAM CALLBACK QUERY FOUND:', {
+        id: update.callback_query.id,
+        fromId: update.callback_query.from?.id,
+        data: update.callback_query.data,
+      })
+
       await handleCallbackQuery(update.callback_query)
 
-      return res.json({ ok: true })
+      return res.json({
+        ok: true,
+        handled: 'callback_query',
+      })
     }
 
     const message = update.message || update.edited_message || null
 
     if (!message) {
-      return res.json({ ok: true })
+      console.log('TELEGRAM UPDATE WITHOUT MESSAGE OR CALLBACK')
+
+      return res.json({
+        ok: true,
+        handled: 'empty',
+      })
     }
 
     const chatId = message.chat?.id
     const text = message.text || ''
     const telegramId = message.from?.id || chatId
 
+    console.log('TELEGRAM MESSAGE FOUND:', {
+      chatId,
+      telegramId,
+      text,
+    })
+
     if (!chatId) {
-      return res.json({ ok: true })
+      return res.json({
+        ok: true,
+        handled: 'no_chat_id',
+      })
     }
 
     if (text.startsWith('/start')) {
@@ -623,13 +634,27 @@ router.post('/webhook', async (req, res) => {
         telegramId,
         text,
       })
+
+      return res.json({
+        ok: true,
+        handled: 'start',
+      })
     }
 
-    return res.json({ ok: true })
+    return res.json({
+      ok: true,
+      handled: 'message',
+    })
   } catch (error) {
-    console.error('Telegram webhook error:', error)
+    console.error('TELEGRAM WEBHOOK ERROR:', {
+      message: error.message,
+      stack: error.stack,
+    })
 
-    return res.json({ ok: true })
+    return res.json({
+      ok: true,
+      error: error.message,
+    })
   }
 })
 
