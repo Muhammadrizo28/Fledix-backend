@@ -1,61 +1,74 @@
-const { DateTime } = require('luxon')
 const { supabase } = require('./supabaseClient')
-const LOOKAHEAD_DAYS = 30
+const { sendTelegramMessage } = require('./telegram.service')
 
-const DAY_CODES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-function parseTimeRange(time) {
-  if (!time || typeof time !== 'string') {
-    return {
-      startTime: '',
-      endTime: '',
-    }
-  }
-
-  const parts = time.split(/\s*-\s*/)
-
-  const startTime = parts[0]?.trim() || ''
-  const endTime = parts[1]?.trim() || ''
-
-  const isValid = (value) => /^\d{2}:\d{2}$/.test(value)
-
-  return {
-    startTime: isValid(startTime) ? startTime : '',
-    endTime: isValid(endTime) ? endTime : '',
-  }
+const NOTIFICATION_STATUS = {
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  SENT: 'sent',
+  FAILED: 'failed',
 }
 
-function parseDate(dateString, timezone) {
-  if (!dateString) return null
+const TASK_START_TYPE = 'task_start'
+const DEFAULT_TIMEZONE = 'Europe/London'
 
-  const date = DateTime.fromFormat(dateString, 'dd/MM/yyyy', {
-    zone: timezone,
-  })
+let schedulerInterval = null
+let isProcessing = false
 
-  if (!date.isValid) return null
+function parseDateParts(dateText) {
+  if (!dateText) return null
 
-  return date.startOf('day')
+  const parts = String(dateText).split('/').map(Number)
+
+  if (parts.length !== 3) return null
+
+  const [day, month, year] = parts
+
+  if (!day || !month || !year) return null
+
+  return { day, month, year }
 }
 
-function buildSendAt({ dateString, timeString, timezone }) {
-  const dateTime = DateTime.fromFormat(
-    `${dateString} ${timeString}`,
-    'dd/MM/yyyy HH:mm',
-    {
-      zone: timezone,
-    }
-  )
+function parseTimeParts(timeText) {
+  if (!timeText) return null
 
-  if (!dateTime.isValid) return null
+  const clean = String(timeText).trim()
 
-  return dateTime.toUTC().toISO()
+  const match = clean.match(/^(\d{1,2}):(\d{2})$/)
+
+  if (!match) return null
+
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+
+  return { hour, minute }
 }
 
-function isDailyRepeat(repeat) {
+function formatDate(dateObject) {
+  const day = String(dateObject.getDate()).padStart(2, '0')
+  const month = String(dateObject.getMonth() + 1).padStart(2, '0')
+  const year = dateObject.getFullYear()
+
+  return `${day}/${month}/${year}`
+}
+
+function getWeekName(dateObject) {
+  const names = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+
+  return names[dateObject.getDay()]
+}
+
+function isRepeatOnDate(repeat, dateObject) {
+  if (!Array.isArray(repeat) || repeat.length === 0) return false
+
+  const dayName = getWeekName(dateObject)
+
   return repeat.some((item) => {
-    const value = String(item).toLowerCase()
+    const value = String(item).toLowerCase().trim()
 
     return (
+      value === dayName ||
       value === 'daily' ||
       value === 'everyday' ||
       value === 'every day'
@@ -63,304 +76,385 @@ function isDailyRepeat(repeat) {
   })
 }
 
-function isRepeatOnDate(repeat, date) {
-  if (!Array.isArray(repeat) || repeat.length === 0) return false
+function getTimeZoneOffsetMs(timeZone, dateObject) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(dateObject)
 
-  if (isDailyRepeat(repeat)) return true
+  const values = {}
 
-  const dayCode = DAY_CODES[date.weekday % 7].toLowerCase()
-
-  return repeat.some((item) => {
-    return String(item).toLowerCase() === dayCode
+  parts.forEach((part) => {
+    if (part.type !== 'literal') {
+      values[part.type] = part.value
+    }
   })
+
+  const asUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    Number(values.hour),
+    Number(values.minute),
+    Number(values.second)
+  )
+
+  return asUtc - dateObject.getTime()
 }
 
-function getUpcomingTaskDates(task, timezone) {
-  const taskDate = task.date || task.startDate || task.start_date || ''
+function zonedDateTimeToUtc({ dateText, timeText, timeZone }) {
+  const dateParts = parseDateParts(dateText)
+  const timeParts = parseTimeParts(timeText)
+
+  if (!dateParts || !timeParts) return null
+
+  const zone = timeZone || DEFAULT_TIMEZONE
+
+  const utcGuess = Date.UTC(
+    dateParts.year,
+    dateParts.month - 1,
+    dateParts.day,
+    timeParts.hour,
+    timeParts.minute,
+    0,
+    0
+  )
+
+  const firstOffset = getTimeZoneOffsetMs(zone, new Date(utcGuess))
+  const firstUtc = new Date(utcGuess - firstOffset)
+
+  const secondOffset = getTimeZoneOffsetMs(zone, firstUtc)
+  const finalUtc = new Date(utcGuess - secondOffset)
+
+  if (Number.isNaN(finalUtc.getTime())) return null
+
+  return finalUtc
+}
+
+function getNextStartSendAt(task, userTimezone) {
+  if (!task?.time) return null
+  if (task.frozen || task.completed) return null
+
   const repeat = Array.isArray(task.repeat) ? task.repeat : []
-
-  const startDate = parseDate(taskDate, timezone)
-
-  if (!startDate) return []
+  const now = new Date()
 
   if (repeat.length === 0) {
-    return [startDate.toFormat('dd/MM/yyyy')]
+    if (!task.date) return null
+
+    const sendAt = zonedDateTimeToUtc({
+      dateText: task.date,
+      timeText: task.time,
+      timeZone: userTimezone,
+    })
+
+    if (!sendAt) return null
+    if (sendAt.getTime() <= now.getTime()) return null
+
+    return sendAt
   }
 
-  const today = DateTime.now().setZone(timezone).startOf('day')
-  const dates = []
+  const startDateParts = parseDateParts(task.date)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
 
-  for (let i = 0; i <= LOOKAHEAD_DAYS; i += 1) {
-    const currentDate = today.plus({ days: i })
+  let startDate = today
 
-    if (currentDate < startDate) continue
+  if (startDateParts) {
+    startDate = new Date(
+      startDateParts.year,
+      startDateParts.month - 1,
+      startDateParts.day
+    )
 
-    if (isRepeatOnDate(repeat, currentDate)) {
-      dates.push(currentDate.toFormat('dd/MM/yyyy'))
+    startDate.setHours(0, 0, 0, 0)
+
+    if (startDate < today) {
+      startDate = today
     }
   }
 
-  return dates
-}
+  for (let i = 0; i < 30; i += 1) {
+    const candidate = new Date(startDate)
+    candidate.setDate(startDate.getDate() + i)
 
-function getNotificationText({ type, task, user }) {
-  const language = user.language || 'en'
-  const title = task.title || 'Task'
+    if (!isRepeatOnDate(repeat, candidate)) continue
 
-  if (language === 'ru') {
-    if (type === 'task_start') {
-      return `🔔 Задача начинается:\n<b>${title}</b>`
-    }
+    const candidateDateText = formatDate(candidate)
 
-    if (type === 'task_end') {
-      return `⏰ Задача закончилась:\n<b>${title}</b>`
-    }
+    const sendAt = zonedDateTimeToUtc({
+      dateText: candidateDateText,
+      timeText: task.time,
+      timeZone: userTimezone,
+    })
 
-    if (type === 'subscription_end') {
-      return `👑 Твоя Pro подписка скоро закончится.`
+    if (sendAt && sendAt.getTime() > now.getTime()) {
+      return sendAt
     }
   }
 
-  if (type === 'task_start') {
-    return `🔔 Task starts now:\n<b>${title}</b>`
-  }
-
-  if (type === 'task_end') {
-    return `⏰ Task ended:\n<b>${title}</b>`
-  }
-
-  if (type === 'subscription_end') {
-    return `👑 Your Pro subscription is ending soon.`
-  }
-
-  return title
+  return null
 }
 
 async function clearPendingTaskNotifications(taskId) {
   if (!taskId) return
 
-  await supabase
-    .from('notifications')
-    .update({
-      status: 'cancelled',
-      updated_at: new Date().toISOString(),
-    })
+  const { error } = await supabase
+    .from('task_notifications')
+    .delete()
     .eq('task_id', taskId)
-    .eq('status', 'pending')
-    .is('sent_at', null)
+    .eq('status', NOTIFICATION_STATUS.PENDING)
+
+  if (error) {
+    console.error('Clear pending task notifications error:', error.message)
+  }
 }
 
 async function rebuildTaskNotifications(taskId) {
   if (!taskId) return
 
+  await clearPendingTaskNotifications(taskId)
+
   const { data: task, error: taskError } = await supabase
     .from('tasks')
-    .select('*')
+    .select(
+      `
+      id,
+      user_id,
+      title,
+      date,
+      time,
+      repeat,
+      frozen,
+      completed,
+      challenge_type
+      `
+    )
     .eq('id', taskId)
     .single()
 
   if (taskError || !task) {
-    console.error('Task notification rebuild task load error:', taskError)
     return
   }
 
-  const userId = task.user_id || task.userId
-
-  if (!userId) return
+  if (!task.time) return
+  if (task.frozen || task.completed) return
+  if (task.challenge_type === 'friend') return
 
   const { data: user, error: userError } = await supabase
     .from('users')
     .select(
-      'id, telegram_id, timezone, language, notifications_enabled, notify_task_start, notify_task_end'
+      `
+      id,
+      telegram_id,
+      timezone,
+      language,
+      notifications_enabled,
+      notify_task_start
+      `
     )
-    .eq('id', userId)
+    .eq('id', task.user_id)
     .single()
 
   if (userError || !user) {
-    console.error('Task notification rebuild user load error:', userError)
     return
   }
 
-  await clearPendingTaskNotifications(taskId)
-
   if (!user.telegram_id) return
   if (!user.notifications_enabled) return
-  if (task.frozen || task.completed) return
+  if (!user.notify_task_start) return
 
-  const timezone = user.timezone || 'Europe/London'
+  const sendAt = getNextStartSendAt(task, user.timezone || DEFAULT_TIMEZONE)
 
-  const { startTime, endTime } = parseTimeRange(task.time)
+  if (!sendAt) return
 
-  if (!startTime && !endTime) return
-
-  const dates = getUpcomingTaskDates(task, timezone)
-
-  if (dates.length === 0) return
-
-  const nowIso = DateTime.utc().toISO()
-  const rows = []
-
-  for (const dateString of dates) {
-    if (startTime && user.notify_task_start !== false) {
-      const sendAt = buildSendAt({
-        dateString,
-        timeString: startTime,
-        timezone,
-      })
-
-      if (sendAt && sendAt > nowIso) {
-        rows.push({
-          user_id: user.id,
-          telegram_id: user.telegram_id,
-          task_id: task.id,
-          type: 'task_start',
-          title: task.title || 'Task',
-          message: getNotificationText({
-            type: 'task_start',
-            task,
-            user,
-          }),
-          send_at: sendAt,
-          status: 'pending',
-          dedupe_key: `task:${task.id}:start:${dateString}`,
-        })
-      }
-    }
-
-    if (endTime && user.notify_task_end !== false) {
-      const sendAt = buildSendAt({
-        dateString,
-        timeString: endTime,
-        timezone,
-      })
-
-      if (sendAt && sendAt > nowIso) {
-        rows.push({
-          user_id: user.id,
-          telegram_id: user.telegram_id,
-          task_id: task.id,
-          type: 'task_end',
-          title: task.title || 'Task',
-          message: getNotificationText({
-            type: 'task_end',
-            task,
-            user,
-          }),
-          send_at: sendAt,
-          status: 'pending',
-          dedupe_key: `task:${task.id}:end:${dateString}`,
-        })
-      }
-    }
-  }
-
-  if (rows.length === 0) return
-
-  const { error } = await supabase
-    .from('notifications')
-    .upsert(rows, {
-      onConflict: 'dedupe_key',
-      ignoreDuplicates: true,
+  const { error: insertError } = await supabase
+    .from('task_notifications')
+    .insert({
+      task_id: task.id,
+      user_id: task.user_id,
+      notification_type: TASK_START_TYPE,
+      send_at: sendAt.toISOString(),
+      status: NOTIFICATION_STATUS.PENDING,
     })
 
-  if (error) {
-    console.error('Notification upsert error:', error)
+  if (insertError) {
+    console.error('Create task notification error:', insertError.message)
   }
 }
 
+function getTaskStartMessage({ task, user }) {
+  if (user.language === 'ru') {
+    return `⏰ Задача начинается: ${task.title}`
+  }
 
-async function rebuildSubscriptionNotifications(userId) {
-  if (!userId) return
+  return `⏰ Task starts now: ${task.title}`
+}
 
-  const { data: user, error } = await supabase
-    .from('users')
-    .select(
-      'id, telegram_id, timezone, language, notifications_enabled, notify_subscription_end, pro_subscription, pro_expires_at'
-    )
-    .eq('id', userId)
+async function markNotification(notificationId, patch) {
+  const { error } = await supabase
+    .from('task_notifications')
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', notificationId)
+
+  if (error) {
+    console.error('Notification update error:', error.message)
+  }
+}
+
+async function processNotification(notification) {
+  const { data: task, error: taskError } = await supabase
+    .from('tasks')
+    .select('id, user_id, title, date, time, repeat, frozen, completed')
+    .eq('id', notification.task_id)
     .single()
 
-  if (error || !user) return
+  if (taskError || !task) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'TASK_NOT_FOUND',
+    })
 
-  await supabase
-    .from('notifications')
-    .delete()
-    .eq('user_id', userId)
-    .eq('type', 'subscription_end')
-    .eq('status', 'pending')
-    .is('sent_at', null)
+    return
+  }
 
-  if (!user.telegram_id) return
-  if (!user.notifications_enabled) return
-  if (!user.notify_subscription_end) return
-  if (!user.pro_subscription) return
-  if (!user.pro_expires_at) return
+  const { data: user, error: userError } = await supabase
+    .from('users')
+    .select(
+      `
+      id,
+      telegram_id,
+      language,
+      notifications_enabled,
+      notify_task_start
+      `
+    )
+    .eq('id', notification.user_id)
+    .single()
 
-  const timezone = user.timezone || 'Europe/London'
+  if (userError || !user) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'USER_NOT_FOUND',
+    })
 
-  const endDate = DateTime.fromISO(user.pro_expires_at, {
-    zone: 'utc',
-  }).setZone(timezone)
+    return
+  }
 
-  if (!endDate.isValid) return
+  if (
+    !user.telegram_id ||
+    !user.notifications_enabled ||
+    !user.notify_task_start ||
+    task.frozen ||
+    task.completed
+  ) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'NOTIFICATION_NOT_ALLOWED',
+    })
 
-  const now = DateTime.utc()
+    return
+  }
 
-  if (endDate.toUTC() <= now) return
+  await markNotification(notification.id, {
+    status: NOTIFICATION_STATUS.PROCESSING,
+  })
 
-  const reminderOffsets = [
-    {
-      key: '3d',
-      date: endDate.minus({ days: 3 }),
-    },
-    {
-      key: '1d',
-      date: endDate.minus({ days: 1 }),
-    },
-    {
-      key: 'same-day',
-      date: endDate,
-    },
-  ]
+  try {
+    await sendTelegramMessage({
+      chatId: user.telegram_id,
+      text: getTaskStartMessage({ task, user }),
+    })
 
-  const rows = []
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.SENT,
+      sent_at: new Date().toISOString(),
+      error: null,
+    })
 
-  for (const item of reminderOffsets) {
-    const sendAt = item.date.toUTC()
-
-    if (sendAt <= now) continue
-
-    const message =
-      user.language === 'ru'
-        ? `👑 Твоя Pro подписка заканчивается ${endDate.toFormat('dd/MM/yyyy')}.`
-        : `👑 Your Pro subscription ends on ${endDate.toFormat('dd/MM/yyyy')}.`
-
-    rows.push({
-      user_id: user.id,
-      telegram_id: user.telegram_id,
-      task_id: null,
-      type: 'subscription_end',
-      title: 'Pro subscription',
-      message,
-      send_at: sendAt.toISO(),
-      status: 'pending',
-      dedupe_key: `subscription:${user.id}:${item.key}:${endDate.toISODate()}`,
+    await rebuildTaskNotifications(task.id)
+  } catch (error) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: error.message || 'TELEGRAM_SEND_FAILED',
     })
   }
+}
 
-  if (rows.length === 0) return
+async function processDueTaskNotifications() {
+  if (isProcessing) return
 
-  const { error: insertError } = await supabase
-    .from('notifications')
-    .insert(rows)
+  isProcessing = true
 
-  if (insertError) {
-    console.error('Subscription notification insert error:', insertError)
+  try {
+    const nowIso = new Date().toISOString()
+
+    const { data: notifications, error } = await supabase
+      .from('task_notifications')
+      .select('id, task_id, user_id, notification_type, send_at, status')
+      .eq('status', NOTIFICATION_STATUS.PENDING)
+      .lte('send_at', nowIso)
+      .order('send_at', { ascending: true })
+      .limit(30)
+
+    if (error) {
+      throw error
+    }
+
+    for (const notification of notifications || []) {
+      await processNotification(notification)
+    }
+  } catch (error) {
+    console.error('Process task notifications error:', error.message)
+  } finally {
+    isProcessing = false
   }
+}
+
+async function rebuildAllPendingTaskNotifications() {
+  const { data: tasks, error } = await supabase
+    .from('tasks')
+    .select('id')
+    .not('time', 'is', null)
+    .neq('time', '')
+
+  if (error) {
+    console.error('Rebuild all task notifications error:', error.message)
+    return
+  }
+
+  for (const task of tasks || []) {
+    await rebuildTaskNotifications(task.id)
+  }
+}
+
+function initNotificationScheduler() {
+  if (schedulerInterval) return
+
+  rebuildAllPendingTaskNotifications().catch((error) => {
+    console.error('Initial task notification rebuild error:', error)
+  })
+
+  processDueTaskNotifications().catch((error) => {
+    console.error('Initial task notification process error:', error)
+  })
+
+  schedulerInterval = setInterval(() => {
+    processDueTaskNotifications()
+  }, 30 * 1000)
 }
 
 module.exports = {
+  initNotificationScheduler,
   rebuildTaskNotifications,
   clearPendingTaskNotifications,
-  rebuildSubscriptionNotifications,
+  processDueTaskNotifications,
 }
