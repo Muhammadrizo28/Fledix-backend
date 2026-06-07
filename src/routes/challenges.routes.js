@@ -11,6 +11,15 @@ const {
 
 const router = express.Router()
 
+const ACTIVE_CHALLENGE_LIMIT = 5
+const ACTIVE_CHALLENGE_LIMIT_ERROR = 'ACTIVE_CHALLENGE_LIMIT_REACHED'
+
+const ACTIVE_CHALLENGE_STATUSES = [
+  'pending',
+  'accepted',
+  'delete_requested',
+]
+
 const createChallengeSchema = z.object({
   receiverId: z.string().uuid(),
 
@@ -129,6 +138,62 @@ function isChallengeEndDatePassed(endDate) {
   if (!parsedEndDate) return false
 
   return new Date().getTime() > parsedEndDate.getTime()
+}
+
+async function getActiveFriendChallengeCount(userId) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .select('id, challenge_origin_task_id, challenge_status, end_date')
+    .eq('challenge_type', 'friend')
+    .in('challenge_status', ACTIVE_CHALLENGE_STATUSES)
+    .or(
+      `user_id.eq.${userId},challenge_sender.eq.${userId},challenge_receiver.eq.${userId}`
+    )
+
+  if (error) {
+    return {
+      success: false,
+      error: error.message,
+      count: 0,
+    }
+  }
+
+  const activeOriginIds = new Set()
+
+  for (const task of data || []) {
+    const originId = task.challenge_origin_task_id || task.id
+
+    if (!originId) continue
+
+    if (
+      task.challenge_status === 'accepted' &&
+      isChallengeEndDatePassed(task.end_date)
+    ) {
+      continue
+    }
+
+    activeOriginIds.add(originId)
+  }
+
+  return {
+    success: true,
+    count: activeOriginIds.size,
+  }
+}
+
+function sendActiveChallengeLimitError(res, payload = {}) {
+  return res.status(409).json({
+    success: false,
+
+    error: ACTIVE_CHALLENGE_LIMIT_ERROR,
+    key: ACTIVE_CHALLENGE_LIMIT_ERROR,
+    code: ACTIVE_CHALLENGE_LIMIT_ERROR,
+
+    message: 'You can have up to 5 active challenges only.',
+    limit: ACTIVE_CHALLENGE_LIMIT,
+
+    ...payload,
+  })
 }
 
 function buildChallengeResult(task) {
@@ -482,6 +547,39 @@ router.post(
       return res.status(404).json({
         success: false,
         error: 'USER_NOT_FOUND',
+      })
+    }
+
+    const senderActiveChallenges = await getActiveFriendChallengeCount(senderId)
+
+    if (!senderActiveChallenges.success) {
+      return res.status(500).json({
+        success: false,
+        error: senderActiveChallenges.error,
+      })
+    }
+
+    if (senderActiveChallenges.count >= ACTIVE_CHALLENGE_LIMIT) {
+      return sendActiveChallengeLimitError(res, {
+        scope: 'sender',
+        currentCount: senderActiveChallenges.count,
+      })
+    }
+
+    const receiverActiveChallenges =
+      await getActiveFriendChallengeCount(receiverId)
+
+    if (!receiverActiveChallenges.success) {
+      return res.status(500).json({
+        success: false,
+        error: receiverActiveChallenges.error,
+      })
+    }
+
+    if (receiverActiveChallenges.count >= ACTIVE_CHALLENGE_LIMIT) {
+      return sendActiveChallengeLimitError(res, {
+        scope: 'receiver',
+        currentCount: receiverActiveChallenges.count,
       })
     }
 
