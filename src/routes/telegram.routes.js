@@ -23,6 +23,8 @@ function checkTelegramSecret(req, res, next) {
   const receivedSecret = req.headers['x-telegram-bot-api-secret-token']
 
   if (expectedSecret && receivedSecret !== expectedSecret) {
+    console.error('INVALID_TELEGRAM_SECRET')
+
     return res.status(403).json({
       success: false,
       error: 'INVALID_TELEGRAM_SECRET',
@@ -194,6 +196,11 @@ async function getUserByTelegramId(telegramId) {
     .single()
 
   if (error || !user) {
+    console.error('TELEGRAM_USER_NOT_FOUND:', {
+      telegramId,
+      error: error?.message,
+    })
+
     return null
   }
 
@@ -271,16 +278,6 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     return
   }
 
-  if (!isActiveProUser(user)) {
-    await sendProRequiredMessage({
-      user,
-      chatId,
-      callbackQueryId,
-    })
-
-    return
-  }
-
   const { taskId, doneDate } = parsed
 
   if (!taskId || !doneDate) {
@@ -299,6 +296,11 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .eq('id', taskId)
     .eq('user_id', user.id)
     .single()
+
+  console.log('TELEGRAM DONE TASK LOOKUP:', {
+    found: Boolean(task),
+    error: taskError?.message,
+  })
 
   if (taskError || !task) {
     await answerCallbackQuery({
@@ -358,6 +360,11 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .eq('user_id', user.id)
     .select()
     .single()
+
+  console.log('TELEGRAM DONE UPDATE RESULT:', {
+    success: Boolean(updatedTask),
+    error: updateError?.message,
+  })
 
   if (updateError || !updatedTask) {
     await answerCallbackQuery({
@@ -549,12 +556,15 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
 }
 
 async function handleCallbackQuery(callbackQuery) {
+  console.log('TELEGRAM CALLBACK RECEIVED:', {
+    id: callbackQuery.id,
+    fromId: callbackQuery.from?.id,
+    data: callbackQuery.data,
+  })
+
   const parsed = parseCallbackData(callbackQuery.data)
 
-  console.log('TELEGRAM CALLBACK RECEIVED:', {
-    data: callbackQuery.data,
-    parsed,
-  })
+  console.log('TELEGRAM CALLBACK PARSED:', parsed)
 
   if (parsed?.type === 'task_done') {
     await handleTaskDoneCallback({
@@ -578,10 +588,12 @@ async function handleCallbackQuery(callbackQuery) {
     callbackQueryId: callbackQuery.id,
     text: 'Unknown action.',
     showAlert: false,
-  }).catch(() => null)
+  }).catch((error) => {
+    console.error('ANSWER CALLBACK UNKNOWN ERROR:', error.message)
+  })
 }
 
-router.post('/webhook', checkTelegramSecret, async (req, res) => {
+router.post('/webhook', async (req, res) => {
   try {
     const update = req.body || {}
 
