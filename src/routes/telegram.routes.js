@@ -6,7 +6,7 @@ const {
   sendTelegramMessage,
   answerCallbackQuery,
   editTelegramMessageReplyMarkup,
-  deleteTelegramMessage,
+  editTelegramMessageText,
 } = require('../services/telegram.service')
 
 const {
@@ -266,6 +266,42 @@ async function handleStartMessage({ chatId, telegramId, text }) {
   })
 }
 
+async function editTaskMessageAsDone({ chatId, messageId, user, updatedTask }) {
+  if (!chatId || !messageId || !updatedTask) return
+
+  const text =
+    user.language === 'ru'
+      ? `✅ Выполнено: ${updatedTask.title}`
+      : `✅ Done: ${updatedTask.title}`
+
+  try {
+    await editTelegramMessageText({
+      chatId,
+      messageId,
+      text,
+      replyMarkup: {
+        inline_keyboard: [],
+      },
+    })
+
+    return
+  } catch (error) {
+    console.error('EDIT TELEGRAM DONE MESSAGE TEXT ERROR:', error.message)
+  }
+
+  try {
+    await editTelegramMessageReplyMarkup({
+      chatId,
+      messageId,
+      replyMarkup: {
+        inline_keyboard: [],
+      },
+    })
+  } catch (error) {
+    console.error('EDIT TELEGRAM DONE MESSAGE MARKUP ERROR:', error.message)
+  }
+}
+
 async function handleTaskDoneCallback({ callbackQuery, parsed }) {
   const telegramId = String(callbackQuery.from?.id || '')
 
@@ -285,7 +321,8 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     if (chatId) {
       await sendTelegramMessage({
         chatId,
-        text: 'User not found. Open the app and enable Telegram notifications again.',
+        text:
+          'User not found. Open the app and enable Telegram notifications again.',
       }).catch(() => null)
     }
 
@@ -345,24 +382,12 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
   const currentDone = Array.isArray(task.done) ? task.done : []
 
   if (currentDone.includes(doneDate)) {
-    if (chatId && messageId) {
-  await deleteTelegramMessage({
-    chatId,
-    messageId,
-  }).catch((error) => {
-    console.error('DELETE TELEGRAM TASK MESSAGE ERROR:', error.message)
-  })
-}
-
-    if (chatId) {
-      await sendTelegramMessage({
-        chatId,
-        text:
-          user.language === 'ru'
-            ? 'Уже отмечено как выполнено ✅'
-            : 'Already marked as done ✅',
-      }).catch(() => null)
-    }
+    await editTaskMessageAsDone({
+      chatId,
+      messageId,
+      user,
+      updatedTask: task,
+    })
 
     return
   }
@@ -413,23 +438,12 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
 
   await rebuildTaskNotifications(updatedTask.id)
 
-  if (chatId && messageId) {
-    await editTelegramMessageReplyMarkup({
-      chatId,
-      messageId,
-      replyMarkup: null,
-    }).catch(() => null)
-  }
-
-  if (chatId) {
-    await sendTelegramMessage({
-      chatId,
-      text:
-        user.language === 'ru'
-          ? `✅ Выполнено: ${updatedTask.title}`
-          : `✅ Done: ${updatedTask.title}`,
-    }).catch(() => null)
-  }
+  await editTaskMessageAsDone({
+    chatId,
+    messageId,
+    user,
+    updatedTask,
+  })
 
   console.log('TELEGRAM TASK DONE SUCCESS:', {
     taskId: updatedTask.id,

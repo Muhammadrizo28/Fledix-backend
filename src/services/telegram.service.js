@@ -71,7 +71,7 @@ async function answerCallbackQuery({
 async function editTelegramMessageReplyMarkup({
   chatId,
   messageId,
-  replyMarkup = null,
+  replyMarkup = { inline_keyboard: [] },
 }) {
   return telegramRequest('editMessageReplyMarkup', {
     chat_id: chatId,
@@ -84,7 +84,7 @@ async function editTelegramMessageText({
   chatId,
   messageId,
   text,
-  replyMarkup = null,
+  replyMarkup = { inline_keyboard: [] },
   parseMode = null,
   disableWebPagePreview = true,
 }) {
@@ -93,24 +93,14 @@ async function editTelegramMessageText({
     message_id: messageId,
     text,
     disable_web_page_preview: disableWebPagePreview,
+    reply_markup: replyMarkup,
   }
 
   if (parseMode) {
     payload.parse_mode = parseMode
   }
 
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup
-  }
-
   return telegramRequest('editMessageText', payload)
-}
-
-async function deleteTelegramMessage({ chatId, messageId }) {
-  return telegramRequest('deleteMessage', {
-    chat_id: chatId,
-    message_id: messageId,
-  })
 }
 
 module.exports = {
@@ -118,5 +108,4 @@ module.exports = {
   answerCallbackQuery,
   editTelegramMessageReplyMarkup,
   editTelegramMessageText,
-  deleteTelegramMessage,
 }
