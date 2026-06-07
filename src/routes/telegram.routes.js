@@ -605,8 +605,8 @@ async function handleFocusStartCallback({ callbackQuery, parsed, user }) {
       messageId,
       text:
         user.language === 'ru'
-          ? `▶️ ${modeText} timer started in Fledix.`
-          : `▶️ ${modeText} timer started in Fledix.`,
+          ? `▶️ ${modeText} time started in Fledix.`
+          : `▶️ ${modeText} time started in Fledix.`,
       replyMarkup: {
         inline_keyboard: [],
       },
