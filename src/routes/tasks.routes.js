@@ -16,6 +16,10 @@ const {
 
 const router = express.Router()
 
+const FREE_REGULAR_TASK_LIMIT = 4
+const PRO_REGULAR_TASK_LIMIT = 10
+const REGULAR_TASK_LIMIT_ERROR = 'REGULAR_TASK_LIMIT_REACHED'
+
 function normalizeSubtasks(subtasks) {
   if (!Array.isArray(subtasks)) return []
 
@@ -37,6 +41,68 @@ function normalizeSubtasks(subtasks) {
       done: isDone,
       completed: isDone,
     }
+  })
+}
+
+function getRegularTaskLimit(proSubscription) {
+  return proSubscription ? PRO_REGULAR_TASK_LIMIT : FREE_REGULAR_TASK_LIMIT
+}
+
+async function getUserSubscription(userId) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, pro_subscription')
+    .eq('id', userId)
+    .single()
+
+  if (error || !data) {
+    return {
+      success: false,
+      error: error?.message || 'USER_NOT_FOUND',
+      proSubscription: false,
+    }
+  }
+
+  return {
+    success: true,
+    proSubscription: Boolean(data.pro_subscription),
+  }
+}
+
+async function getRegularTaskCount(userId) {
+  const { count, error } = await supabase
+    .from('tasks')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+    .eq('user_id', userId)
+    .or('challenge_type.is.null,challenge_type.neq.friend')
+
+  if (error) {
+    return {
+      success: false,
+      error: error.message,
+      count: 0,
+    }
+  }
+
+  return {
+    success: true,
+    count: Number(count || 0),
+  }
+}
+
+function sendRegularTaskLimitError(res, payload = {}) {
+  return res.status(409).json({
+    success: false,
+
+    error: REGULAR_TASK_LIMIT_ERROR,
+    key: REGULAR_TASK_LIMIT_ERROR,
+    code: REGULAR_TASK_LIMIT_ERROR,
+
+    message: 'Regular task limit reached.',
+    ...payload,
   })
 }
 
@@ -120,6 +186,37 @@ router.post(
       completed,
     } = req.body
 
+    const subscriptionResult = await getUserSubscription(userId)
+
+    if (!subscriptionResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: subscriptionResult.error,
+      })
+    }
+
+    const proSubscription = subscriptionResult.proSubscription
+    const taskLimit = getRegularTaskLimit(proSubscription)
+
+    const taskCountResult = await getRegularTaskCount(userId)
+
+    if (!taskCountResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: taskCountResult.error,
+      })
+    }
+
+    if (taskCountResult.count >= taskLimit) {
+      return sendRegularTaskLimitError(res, {
+        limit: taskLimit,
+        currentCount: taskCountResult.count,
+        proSubscription,
+        freeLimit: FREE_REGULAR_TASK_LIMIT,
+        proLimit: PRO_REGULAR_TASK_LIMIT,
+      })
+    }
+
     const normalizedSubtasks = normalizeSubtasks(subtaskArr || subtask_arr)
 
     const { data, error } = await supabase
@@ -136,6 +233,9 @@ router.post(
         done,
         frozen,
         completed,
+
+        challenge_type: null,
+        challenge_status: null,
       })
       .select()
       .single()
@@ -154,6 +254,13 @@ router.post(
     res.json({
       success: true,
       task: data,
+      taskLimit: {
+        limit: taskLimit,
+        currentCount: taskCountResult.count + 1,
+        proSubscription,
+        freeLimit: FREE_REGULAR_TASK_LIMIT,
+        proLimit: PRO_REGULAR_TASK_LIMIT,
+      },
     })
   }
 )
