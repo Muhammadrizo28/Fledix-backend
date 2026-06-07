@@ -145,7 +145,6 @@ function parseCallbackData(data) {
   const text = String(data || '').trim()
   const parts = text.split(':')
 
-  // New format
   if (parts[0] === 'task_done') {
     return {
       type: 'task_done',
@@ -154,7 +153,6 @@ function parseCallbackData(data) {
     }
   }
 
-  // Old format support
   if (parts[0] === 'done') {
     return {
       type: 'task_done',
@@ -170,7 +168,6 @@ function parseCallbackData(data) {
     }
   }
 
-  // Old format support
   if (parts[0] === 'extend') {
     return {
       type: 'task_extend',
@@ -179,6 +176,24 @@ function parseCallbackData(data) {
   }
 
   return null
+}
+
+async function safeAnswerCallbackQuery({
+  callbackQueryId,
+  text = '',
+  showAlert = false,
+}) {
+  if (!callbackQueryId) return
+
+  try {
+    await answerCallbackQuery({
+      callbackQueryId,
+      text,
+      showAlert,
+    })
+  } catch (error) {
+    console.error('ANSWER_CALLBACK_ERROR:', error.message)
+  }
 }
 
 async function getUserByTelegramId(telegramId) {
@@ -209,23 +224,19 @@ async function getUserByTelegramId(telegramId) {
   return user
 }
 
-async function sendProRequiredMessage({ user, chatId, callbackQueryId }) {
+async function sendProRequiredMessage({ user, chatId }) {
   const text =
     user?.language === 'ru'
       ? '🔒 Для этого действия нужна Pro подписка.'
       : '🔒 Pro subscription is required for this action.'
 
-  await answerCallbackQuery({
-    callbackQueryId,
-    text,
-    showAlert: true,
-  })
-
   if (chatId) {
     await sendTelegramMessage({
       chatId,
       text,
-    }).catch(() => null)
+    }).catch((error) => {
+      console.error('SEND_PRO_REQUIRED_MESSAGE_ERROR:', error.message)
+    })
   }
 }
 
@@ -255,7 +266,6 @@ async function handleStartMessage({ chatId, telegramId, text }) {
 }
 
 async function handleTaskDoneCallback({ callbackQuery, parsed }) {
-  const callbackQueryId = callbackQuery.id
   const telegramId = String(callbackQuery.from?.id || '')
 
   const message = callbackQuery.message || {}
@@ -270,14 +280,13 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
 
   const user = await getUserByTelegramId(telegramId)
 
-  console.log('TELEGRAM DONE USER:', user)
-
   if (!user) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text: 'User not found.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: 'User not found. Open the app and enable Telegram notifications again.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -285,11 +294,12 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
   const { taskId, doneDate } = parsed
 
   if (!taskId || !doneDate) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text: 'Invalid task action.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: 'Invalid task action.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -302,29 +312,31 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .single()
 
   console.log('TELEGRAM DONE TASK LOOKUP:', {
-    task,
-    taskError,
+    found: Boolean(task),
+    error: taskError?.message,
   })
 
   if (taskError || !task) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text: user.language === 'ru' ? 'Задача не найдена.' : 'Task not found.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: user.language === 'ru' ? 'Задача не найдена.' : 'Task not found.',
+      }).catch(() => null)
+    }
 
     return
   }
 
   if (task.challenge_type === 'friend') {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text:
-        user.language === 'ru'
-          ? 'Friend challenge нужно закрывать в приложении.'
-          : 'Friend challenge must be completed in the app.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          user.language === 'ru'
+            ? 'Friend challenge нужно закрывать в приложении.'
+            : 'Friend challenge must be completed in the app.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -332,20 +344,21 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
   const currentDone = Array.isArray(task.done) ? task.done : []
 
   if (currentDone.includes(doneDate)) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text:
-        user.language === 'ru'
-          ? 'Уже отмечено как выполнено.'
-          : 'Already marked as done.',
-      showAlert: false,
-    })
-
     if (chatId && messageId) {
       await editTelegramMessageReplyMarkup({
         chatId,
         messageId,
         replyMarkup: null,
+      }).catch(() => null)
+    }
+
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          user.language === 'ru'
+            ? 'Уже отмечено как выполнено ✅'
+            : 'Already marked as done ✅',
       }).catch(() => null)
     }
 
@@ -366,19 +379,20 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     .single()
 
   console.log('TELEGRAM DONE UPDATE RESULT:', {
-    updatedTask,
-    updateError,
+    success: Boolean(updatedTask),
+    error: updateError?.message,
   })
 
   if (updateError || !updatedTask) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text:
-        user.language === 'ru'
-          ? 'Не получилось обновить задачу.'
-          : 'Failed to update task.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          user.language === 'ru'
+            ? 'Не получилось обновить задачу.'
+            : 'Failed to update task.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -397,17 +411,21 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
 
   await rebuildTaskNotifications(updatedTask.id)
 
-  await answerCallbackQuery({
-    callbackQueryId,
-    text: user.language === 'ru' ? 'Готово ✅' : 'Done ✅',
-    showAlert: false,
-  })
-
   if (chatId && messageId) {
     await editTelegramMessageReplyMarkup({
       chatId,
       messageId,
       replyMarkup: null,
+    }).catch(() => null)
+  }
+
+  if (chatId) {
+    await sendTelegramMessage({
+      chatId,
+      text:
+        user.language === 'ru'
+          ? `✅ Выполнено: ${updatedTask.title}`
+          : `✅ Done: ${updatedTask.title}`,
     }).catch(() => null)
   }
 
@@ -418,7 +436,6 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
 }
 
 async function handleTaskExtendCallback({ callbackQuery, parsed }) {
-  const callbackQueryId = callbackQuery.id
   const telegramId = String(callbackQuery.from?.id || '')
 
   const message = callbackQuery.message || {}
@@ -432,11 +449,12 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
   const user = await getUserByTelegramId(telegramId)
 
   if (!user) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text: 'User not found.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: 'User not found.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -445,7 +463,6 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
     await sendProRequiredMessage({
       user,
       chatId,
-      callbackQueryId,
     })
 
     return
@@ -454,11 +471,12 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
   const { taskId } = parsed
 
   if (!taskId) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text: 'Invalid task action.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: 'Invalid task action.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -471,24 +489,26 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
     .single()
 
   if (taskError || !task) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text: user.language === 'ru' ? 'Задача не найдена.' : 'Task not found.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: user.language === 'ru' ? 'Задача не найдена.' : 'Task not found.',
+      }).catch(() => null)
+    }
 
     return
   }
 
   if (task.challenge_type === 'friend') {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text:
-        user.language === 'ru'
-          ? 'Friend challenge нужно менять в приложении.'
-          : 'Friend challenge must be changed in the app.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          user.language === 'ru'
+            ? 'Friend challenge нужно менять в приложении.'
+            : 'Friend challenge must be changed in the app.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -496,14 +516,15 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
   const nextTime = buildExtendedTime(task.time, 15)
 
   if (!nextTime) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text:
-        user.language === 'ru'
-          ? 'У задачи нет времени окончания.'
-          : 'Task has no end time.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          user.language === 'ru'
+            ? 'У задачи нет времени окончания.'
+            : 'Task has no end time.',
+      }).catch(() => null)
+    }
 
     return
   }
@@ -520,28 +541,20 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
     .single()
 
   if (updateError || !updatedTask) {
-    await answerCallbackQuery({
-      callbackQueryId,
-      text:
-        user.language === 'ru'
-          ? 'Не получилось продлить задачу.'
-          : 'Failed to extend task.',
-      showAlert: true,
-    })
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          user.language === 'ru'
+            ? 'Не получилось продлить задачу.'
+            : 'Failed to extend task.',
+      }).catch(() => null)
+    }
 
     return
   }
 
   await rebuildTaskNotifications(updatedTask.id)
-
-  await answerCallbackQuery({
-    callbackQueryId,
-    text:
-      user.language === 'ru'
-        ? 'Продлено на 15 минут ✅'
-        : 'Extended by 15 minutes ✅',
-    showAlert: false,
-  })
 
   if (chatId) {
     await sendTelegramMessage({
@@ -566,6 +579,12 @@ async function handleCallbackQuery(callbackQuery) {
     data: callbackQuery.data,
   })
 
+  await safeAnswerCallbackQuery({
+    callbackQueryId: callbackQuery.id,
+    text: 'Processing...',
+    showAlert: false,
+  })
+
   const parsed = parseCallbackData(callbackQuery.data)
 
   console.log('TELEGRAM CALLBACK PARSED:', parsed)
@@ -588,41 +607,43 @@ async function handleCallbackQuery(callbackQuery) {
     return
   }
 
-  await answerCallbackQuery({
-    callbackQueryId: callbackQuery.id,
-    text: 'Unknown action.',
-    showAlert: false,
-  }).catch((error) => {
-    console.error('ANSWER CALLBACK UNKNOWN ERROR:', error.message)
-  })
+  const chatId = callbackQuery.message?.chat?.id
+
+  if (chatId) {
+    await sendTelegramMessage({
+      chatId,
+      text: 'Unknown action.',
+    }).catch(() => null)
+  }
 }
 
 router.post('/webhook', async (req, res) => {
+  const update = req.body || {}
+
+  console.log('TELEGRAM WEBHOOK UPDATE:', JSON.stringify(update))
+
+  if (update.callback_query) {
+    const callbackQuery = update.callback_query
+
+    res.json({
+      ok: true,
+      handled: 'callback_query',
+    })
+
+    handleCallbackQuery(callbackQuery).catch((error) => {
+      console.error('TELEGRAM CALLBACK HANDLE ERROR:', {
+        message: error.message,
+        stack: error.stack,
+      })
+    })
+
+    return
+  }
+
   try {
-    const update = req.body || {}
-
-    console.log('TELEGRAM WEBHOOK UPDATE:', JSON.stringify(update))
-
-    if (update.callback_query) {
-      console.log('TELEGRAM CALLBACK QUERY FOUND:', {
-        id: update.callback_query.id,
-        fromId: update.callback_query.from?.id,
-        data: update.callback_query.data,
-      })
-
-      await handleCallbackQuery(update.callback_query)
-
-      return res.json({
-        ok: true,
-        handled: 'callback_query',
-      })
-    }
-
     const message = update.message || update.edited_message || null
 
     if (!message) {
-      console.log('TELEGRAM UPDATE WITHOUT MESSAGE OR CALLBACK')
-
       return res.json({
         ok: true,
         handled: 'empty',

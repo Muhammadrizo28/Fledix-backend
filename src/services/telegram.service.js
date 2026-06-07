@@ -25,6 +25,7 @@ async function telegramRequest(method, payload = {}) {
     const error = new Error(data?.description || `TELEGRAM_${method}_FAILED`)
     error.status = response.status
     error.retryAfter = data?.parameters?.retry_after || null
+    error.telegramResponse = data
     throw error
   }
 
@@ -35,14 +36,17 @@ async function sendTelegramMessage({
   chatId,
   text,
   replyMarkup = null,
-  parseMode = 'HTML',
+  parseMode = null,
   disableWebPagePreview = true,
 }) {
   const payload = {
     chat_id: chatId,
     text,
-    parse_mode: parseMode,
     disable_web_page_preview: disableWebPagePreview,
+  }
+
+  if (parseMode) {
+    payload.parse_mode = parseMode
   }
 
   if (replyMarkup) {
@@ -81,15 +85,18 @@ async function editTelegramMessageText({
   messageId,
   text,
   replyMarkup = null,
-  parseMode = 'HTML',
+  parseMode = null,
   disableWebPagePreview = true,
 }) {
   const payload = {
     chat_id: chatId,
     message_id: messageId,
     text,
-    parse_mode: parseMode,
     disable_web_page_preview: disableWebPagePreview,
+  }
+
+  if (parseMode) {
+    payload.parse_mode = parseMode
   }
 
   if (replyMarkup) {
