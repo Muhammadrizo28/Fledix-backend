@@ -253,6 +253,12 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
   const chatId = message.chat?.id
   const messageId = message.message_id
 
+  console.log('TELEGRAM TASK DONE CALLBACK:', {
+    telegramId,
+    taskId: parsed.taskId,
+    doneDate: parsed.doneDate,
+  })
+
   const user = await getUserByTelegramId(telegramId)
 
   if (!user) {
@@ -393,6 +399,11 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
       replyMarkup: null,
     }).catch(() => null)
   }
+
+  console.log('TELEGRAM TASK DONE SUCCESS:', {
+    taskId: updatedTask.id,
+    doneDate,
+  })
 }
 
 async function handleTaskExtendCallback({ callbackQuery, parsed }) {
@@ -401,6 +412,11 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
 
   const message = callbackQuery.message || {}
   const chatId = message.chat?.id
+
+  console.log('TELEGRAM TASK EXTEND CALLBACK:', {
+    telegramId,
+    taskId: parsed.taskId,
+  })
 
   const user = await getUserByTelegramId(telegramId)
 
@@ -525,10 +541,20 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
           : `⏱ Task extended: ${updatedTask.title}\nNew time: ${updatedTask.time}`,
     }).catch(() => null)
   }
+
+  console.log('TELEGRAM TASK EXTEND SUCCESS:', {
+    taskId: updatedTask.id,
+    time: updatedTask.time,
+  })
 }
 
 async function handleCallbackQuery(callbackQuery) {
   const parsed = parseCallbackData(callbackQuery.data)
+
+  console.log('TELEGRAM CALLBACK RECEIVED:', {
+    data: callbackQuery.data,
+    parsed,
+  })
 
   if (parsed?.type === 'task_done') {
     await handleTaskDoneCallback({
