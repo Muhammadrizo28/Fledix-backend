@@ -216,7 +216,12 @@ async function clearPendingTaskNotifications(taskId) {
 }
 
 async function rebuildTaskNotifications(taskId) {
-  if (!taskId) return
+  console.log('🔔 REBUILD START:', taskId)
+
+  if (!taskId) {
+    console.log('❌ NO TASK ID')
+    return
+  }
 
   await clearPendingTaskNotifications(taskId)
 
@@ -238,13 +243,38 @@ async function rebuildTaskNotifications(taskId) {
     .eq('id', taskId)
     .single()
 
+  console.log('🔔 TASK:', task)
+  console.log('🔔 TASK ERROR:', taskError)
+
   if (taskError || !task) {
+    console.log('❌ TASK NOT FOUND')
     return
   }
 
-  if (!task.time) return
-  if (task.frozen || task.completed) return
-  if (task.challenge_type === 'friend') return
+  if (!task.time) {
+    console.log('❌ NO TASK TIME:', task.time)
+    return
+  }
+
+  if (!task.date) {
+    console.log('❌ NO TASK DATE:', task.date)
+    return
+  }
+
+  if (task.frozen) {
+    console.log('❌ TASK FROZEN')
+    return
+  }
+
+  if (task.completed) {
+    console.log('❌ TASK COMPLETED')
+    return
+  }
+
+  if (task.challenge_type === 'friend') {
+    console.log('❌ FRIEND CHALLENGE TASK')
+    return
+  }
 
   const { data: user, error: userError } = await supabase
     .from('users')
@@ -261,19 +291,39 @@ async function rebuildTaskNotifications(taskId) {
     .eq('id', task.user_id)
     .single()
 
+  console.log('🔔 USER:', user)
+  console.log('🔔 USER ERROR:', userError)
+
   if (userError || !user) {
+    console.log('❌ USER NOT FOUND')
     return
   }
 
-  if (!user.telegram_id) return
-  if (!user.notifications_enabled) return
-  if (!user.notify_task_start) return
+  if (!user.telegram_id) {
+    console.log('❌ NO TELEGRAM ID')
+    return
+  }
+
+  if (!user.notifications_enabled) {
+    console.log('❌ NOTIFICATIONS DISABLED')
+    return
+  }
+
+  if (!user.notify_task_start) {
+    console.log('❌ TASK START NOTIFICATIONS DISABLED')
+    return
+  }
 
   const sendAt = getNextStartSendAt(task, user.timezone || DEFAULT_TIMEZONE)
 
-  if (!sendAt) return
+  console.log('🔔 SEND AT:', sendAt)
 
-  const { error: insertError } = await supabase
+  if (!sendAt) {
+    console.log('❌ SEND AT IS NULL. CHECK DATE/TIME FORMAT OR PAST TIME.')
+    return
+  }
+
+  const { data: insertedNotification, error: insertError } = await supabase
     .from('task_notifications')
     .insert({
       task_id: task.id,
@@ -282,10 +332,18 @@ async function rebuildTaskNotifications(taskId) {
       send_at: sendAt.toISOString(),
       status: NOTIFICATION_STATUS.PENDING,
     })
+    .select()
+    .single()
+
+  console.log('🔔 INSERTED NOTIFICATION:', insertedNotification)
+  console.log('🔔 INSERT ERROR:', insertError)
 
   if (insertError) {
-    console.error('Create task notification error:', insertError.message)
+    console.error('❌ CREATE TASK NOTIFICATION ERROR:', insertError.message)
+    return
   }
+
+  console.log('✅ TASK NOTIFICATION CREATED')
 }
 
 function getTaskStartMessage({ task, user }) {
