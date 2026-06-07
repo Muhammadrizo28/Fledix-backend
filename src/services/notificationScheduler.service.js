@@ -9,6 +9,7 @@ const NOTIFICATION_STATUS = {
 }
 
 const TASK_START_TYPE = 'task_start'
+const TASK_END_TYPE = 'task_end'
 const DEFAULT_TIMEZONE = 'Europe/London'
 
 let schedulerInterval = null
@@ -35,8 +36,7 @@ function parseDateParts(dateText) {
 function parseTimeParts(timeText) {
   if (!timeText) return null
 
-  const rawText = String(timeText).trim()
-  const text = rawText.split('-')[0].trim()
+  const text = String(timeText).trim()
 
   const amPmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
 
@@ -63,6 +63,30 @@ function parseTimeParts(timeText) {
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
 
   return { hour, minute }
+}
+
+function parseTaskTimeRange(timeText) {
+  if (!timeText) {
+    return {
+      startTime: '',
+      endTime: '',
+    }
+  }
+
+  const text = String(timeText).trim()
+  const parts = text.split('-').map((item) => item.trim())
+
+  return {
+    startTime: parts[0] || '',
+    endTime:
+      parts[1] && parts[1] !== '--:--' && parts[1] !== '00:00'
+        ? parts[1]
+        : '',
+  }
+}
+
+function formatTimeParts(hour, minute) {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
 }
 
 function formatDate(dateObject) {
@@ -156,8 +180,51 @@ function zonedDateTimeToUtc({ dateText, timeText, timeZone }) {
   return finalUtc
 }
 
-function getNextStartSendAt(task, userTimezone) {
-  if (!task?.time) return null
+function getDateInTimezone(dateInput, timeZone = DEFAULT_TIMEZONE) {
+  const date = new Date(dateInput)
+
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).formatToParts(date)
+
+  const values = {}
+
+  parts.forEach((part) => {
+    if (part.type !== 'literal') {
+      values[part.type] = part.value
+    }
+  })
+
+  return `${values.day}/${values.month}/${values.year}`
+}
+
+function isTaskDoneOnDate(task, dateText) {
+  const done = Array.isArray(task.done) ? task.done : []
+  return done.includes(dateText)
+}
+
+function isActiveProUser(user) {
+  const expiresAt = user?.pro_expires_at || null
+
+  if (!user?.pro_subscription) return false
+
+  if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
+    return false
+  }
+
+  return true
+}
+
+function getNextNotificationSendAt({
+  task,
+  timeText,
+  userTimezone,
+  notificationType,
+}) {
+  if (!timeText) return null
   if (task.frozen || task.completed) return null
 
   const repeat = Array.isArray(task.repeat) ? task.repeat : []
@@ -168,12 +235,18 @@ function getNextStartSendAt(task, userTimezone) {
 
     const sendAt = zonedDateTimeToUtc({
       dateText: task.date,
-      timeText: task.time,
+      timeText,
       timeZone: userTimezone,
     })
 
     if (!sendAt) return null
     if (sendAt.getTime() <= now.getTime()) return null
+
+    const doneDate = getDateInTimezone(sendAt, userTimezone)
+
+    if (notificationType === TASK_END_TYPE && isTaskDoneOnDate(task, doneDate)) {
+      return null
+    }
 
     return sendAt
   }
@@ -208,13 +281,19 @@ function getNextStartSendAt(task, userTimezone) {
 
     const sendAt = zonedDateTimeToUtc({
       dateText: candidateDateText,
-      timeText: task.time,
+      timeText,
       timeZone: userTimezone,
     })
 
-    if (sendAt && sendAt.getTime() > now.getTime()) {
-      return sendAt
+    if (!sendAt || sendAt.getTime() <= now.getTime()) continue
+
+    const doneDate = getDateInTimezone(sendAt, userTimezone)
+
+    if (notificationType === TASK_END_TYPE && isTaskDoneOnDate(task, doneDate)) {
+      continue
     }
+
+    return sendAt
   }
 
   return null
@@ -254,6 +333,7 @@ async function rebuildTaskNotifications(taskId) {
       date,
       time,
       repeat,
+      done,
       frozen,
       completed,
       challenge_type
@@ -321,7 +401,11 @@ async function rebuildTaskNotifications(taskId) {
       timezone,
       language,
       notifications_enabled,
-      notify_task_start
+      notify_task_start,
+      notify_task_end,
+      pro_subscription,
+      pro_expires_at,
+      pro_plan
       `
     )
     .eq('id', task.user_id)
@@ -351,36 +435,63 @@ async function rebuildTaskNotifications(taskId) {
     }
   }
 
-  if (user.notify_task_start === false) {
-    return {
-      success: false,
-      reason: 'TASK_START_NOTIFICATIONS_DISABLED',
-      user,
-    }
-  }
+  const userTimezone = user.timezone || DEFAULT_TIMEZONE
+  const isPro = isActiveProUser(user)
+  const { startTime, endTime } = parseTaskTimeRange(task.time)
 
-  const sendAt = getNextStartSendAt(task, user.timezone || DEFAULT_TIMEZONE)
+  const insertRows = []
 
-  if (!sendAt) {
-    return {
-      success: false,
-      reason: 'SEND_AT_NULL_DATE_TIME_INVALID_OR_PAST',
+  if (user.notify_task_start !== false && startTime) {
+    const sendAt = getNextNotificationSendAt({
       task,
-      timezone: user.timezone || DEFAULT_TIMEZONE,
+      timeText: startTime,
+      userTimezone,
+      notificationType: TASK_START_TYPE,
+    })
+
+    if (sendAt) {
+      insertRows.push({
+        task_id: task.id,
+        user_id: task.user_id,
+        notification_type: TASK_START_TYPE,
+        send_at: sendAt.toISOString(),
+        status: NOTIFICATION_STATUS.PENDING,
+      })
     }
   }
 
-  const { data: insertedNotification, error: insertError } = await supabase
-    .from('task_notifications')
-    .insert({
-      task_id: task.id,
-      user_id: task.user_id,
-      notification_type: TASK_START_TYPE,
-      send_at: sendAt.toISOString(),
-      status: NOTIFICATION_STATUS.PENDING,
+  if (isPro && user.notify_task_end !== false && endTime) {
+    const sendAt = getNextNotificationSendAt({
+      task,
+      timeText: endTime,
+      userTimezone,
+      notificationType: TASK_END_TYPE,
     })
+
+    if (sendAt) {
+      insertRows.push({
+        task_id: task.id,
+        user_id: task.user_id,
+        notification_type: TASK_END_TYPE,
+        send_at: sendAt.toISOString(),
+        status: NOTIFICATION_STATUS.PENDING,
+      })
+    }
+  }
+
+  if (insertRows.length === 0) {
+    return {
+      success: false,
+      reason: 'NO_NOTIFICATION_TO_CREATE',
+      isPro,
+      task,
+    }
+  }
+
+  const { data: insertedNotifications, error: insertError } = await supabase
+    .from('task_notifications')
+    .insert(insertRows)
     .select()
-    .single()
 
   if (insertError) {
     return {
@@ -392,8 +503,8 @@ async function rebuildTaskNotifications(taskId) {
 
   return {
     success: true,
-    reason: 'TASK_NOTIFICATION_CREATED',
-    notification: insertedNotification,
+    reason: 'TASK_NOTIFICATIONS_CREATED',
+    notifications: insertedNotifications || [],
   }
 }
 
@@ -403,6 +514,49 @@ function getTaskStartMessage({ task, user }) {
   }
 
   return `⏰ Task starts now: ${task.title}`
+}
+
+function getTaskEndMessage({ task, user }) {
+  if (user.language === 'ru') {
+    return `⏳ Время задачи закончилось: ${task.title}`
+  }
+
+  return `⏳ Task time ended: ${task.title}`
+}
+
+function buildStartReplyMarkup({ task, doneDate, user }) {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: user.language === 'ru' ? '✅ Выполнено' : '✅ Done',
+          callback_data: `task_done:${task.id}:${doneDate}`,
+        },
+      ],
+    ],
+  }
+}
+
+function buildEndReplyMarkup({ task, doneDate, user }) {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: user.language === 'ru' ? '✅ Выполнено' : '✅ Done',
+          callback_data: `task_done:${task.id}:${doneDate}`,
+        },
+      ],
+      [
+        {
+          text:
+            user.language === 'ru'
+              ? '➕ Продлить на 15 мин'
+              : '➕ Extend 15 min',
+          callback_data: `task_extend:${task.id}`,
+        },
+      ],
+    ],
+  }
 }
 
 async function markNotification(notificationId, patch) {
@@ -420,15 +574,13 @@ async function markNotification(notificationId, patch) {
 }
 
 async function processNotification(notification) {
-  console.log('PROCESS NOTIFICATION START:', notification)
-
   await markNotification(notification.id, {
     status: NOTIFICATION_STATUS.PROCESSING,
   })
 
   const { data: task, error: taskError } = await supabase
     .from('tasks')
-    .select('id, user_id, title, date, time, repeat, frozen, completed')
+    .select('id, user_id, title, date, time, repeat, done, frozen, completed')
     .eq('id', notification.task_id)
     .single()
 
@@ -438,7 +590,6 @@ async function processNotification(notification) {
       error: 'TASK_NOT_FOUND',
     })
 
-    console.log('PROCESS NOTIFICATION FAILED: TASK_NOT_FOUND')
     return
   }
 
@@ -449,8 +600,13 @@ async function processNotification(notification) {
       id,
       telegram_id,
       language,
+      timezone,
       notifications_enabled,
-      notify_task_start
+      notify_task_start,
+      notify_task_end,
+      pro_subscription,
+      pro_expires_at,
+      pro_plan
       `
     )
     .eq('id', notification.user_id)
@@ -462,14 +618,27 @@ async function processNotification(notification) {
       error: 'USER_NOT_FOUND',
     })
 
-    console.log('PROCESS NOTIFICATION FAILED: USER_NOT_FOUND')
+    return
+  }
+
+  const doneDate = getDateInTimezone(
+    notification.send_at || new Date(),
+    user.timezone || DEFAULT_TIMEZONE
+  )
+
+  if (isTaskDoneOnDate(task, doneDate)) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'TASK_ALREADY_DONE',
+    })
+
+    await rebuildTaskNotifications(task.id)
     return
   }
 
   if (
     !user.telegram_id ||
     user.notifications_enabled === false ||
-    user.notify_task_start === false ||
     task.frozen ||
     task.completed
   ) {
@@ -478,27 +647,55 @@ async function processNotification(notification) {
       error: 'NOTIFICATION_NOT_ALLOWED',
     })
 
-    console.log('PROCESS NOTIFICATION FAILED: NOTIFICATION_NOT_ALLOWED', {
-      telegramId: user.telegram_id,
-      notificationsEnabled: user.notifications_enabled,
-      notifyTaskStart: user.notify_task_start,
-      frozen: task.frozen,
-      completed: task.completed,
+    return
+  }
+
+  const isPro = isActiveProUser(user)
+
+  if (notification.notification_type === TASK_END_TYPE && !isPro) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'PRO_REQUIRED_FOR_TASK_END_NOTIFICATION',
+    })
+
+    return
+  }
+
+  if (
+    notification.notification_type === TASK_START_TYPE &&
+    user.notify_task_start === false
+  ) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'TASK_START_NOTIFICATIONS_DISABLED',
+    })
+
+    return
+  }
+
+  if (
+    notification.notification_type === TASK_END_TYPE &&
+    user.notify_task_end === false
+  ) {
+    await markNotification(notification.id, {
+      status: NOTIFICATION_STATUS.FAILED,
+      error: 'TASK_END_NOTIFICATIONS_DISABLED',
     })
 
     return
   }
 
   try {
-    console.log('SENDING TELEGRAM TASK NOTIFICATION:', {
-      notificationId: notification.id,
-      chatId: user.telegram_id,
-      taskTitle: task.title,
-    })
+    const isEndNotification = notification.notification_type === TASK_END_TYPE
 
     await sendTelegramMessage({
       chatId: user.telegram_id,
-      text: getTaskStartMessage({ task, user }),
+      text: isEndNotification
+        ? getTaskEndMessage({ task, user })
+        : getTaskStartMessage({ task, user }),
+      replyMarkup: isEndNotification
+        ? buildEndReplyMarkup({ task, doneDate, user })
+        : buildStartReplyMarkup({ task, doneDate, user }),
     })
 
     await markNotification(notification.id, {
@@ -507,12 +704,8 @@ async function processNotification(notification) {
       error: null,
     })
 
-    console.log('TELEGRAM TASK NOTIFICATION SENT:', notification.id)
-
     await rebuildTaskNotifications(task.id)
   } catch (error) {
-    console.error('TELEGRAM TASK NOTIFICATION FAILED:', error.message)
-
     await markNotification(notification.id, {
       status: NOTIFICATION_STATUS.FAILED,
       error: error.message || 'TELEGRAM_SEND_FAILED',
@@ -521,17 +714,12 @@ async function processNotification(notification) {
 }
 
 async function processDueTaskNotifications() {
-  if (isProcessing) {
-    console.log('Notification processor already running')
-    return
-  }
+  if (isProcessing) return
 
   isProcessing = true
 
   try {
     const nowIso = new Date().toISOString()
-
-    console.log('Checking due notifications:', nowIso)
 
     const { data: notifications, error } = await supabase
       .from('task_notifications')
@@ -542,11 +730,8 @@ async function processDueTaskNotifications() {
       .limit(30)
 
     if (error) {
-      console.error('Due notifications query error:', error.message)
       throw error
     }
-
-    console.log('Due notifications count:', notifications?.length || 0)
 
     for (const notification of notifications || []) {
       await processNotification(notification)
@@ -571,9 +756,8 @@ function initNotificationScheduler() {
   })
 
   schedulerInterval = setInterval(() => {
-    console.log('Notification scheduler tick')
     processDueTaskNotifications()
-  }, 10 * 1000)
+  }, 30 * 1000)
 }
 
 module.exports = {
