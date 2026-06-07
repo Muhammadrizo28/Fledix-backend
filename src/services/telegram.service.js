@@ -1,36 +1,107 @@
-async function sendTelegramMessage({ chatId, text }) {
-  if (!process.env.TELEGRAM_BOT_TOKEN) {
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
+
+if (!TELEGRAM_BOT_TOKEN) {
+  console.warn('TELEGRAM_BOT_TOKEN is missing')
+}
+
+const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`
+
+async function telegramRequest(method, payload = {}) {
+  if (!TELEGRAM_BOT_TOKEN) {
     throw new Error('TELEGRAM_BOT_TOKEN_REQUIRED')
   }
 
-  const response = await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      }),
-    }
-  )
+  const response = await fetch(`${TELEGRAM_API_URL}/${method}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
 
   const data = await response.json().catch(() => null)
 
   if (!response.ok || !data?.ok) {
-    const error = new Error(data?.description || 'TELEGRAM_SEND_FAILED')
+    const error = new Error(data?.description || `TELEGRAM_${method}_FAILED`)
     error.status = response.status
     error.retryAfter = data?.parameters?.retry_after || null
     throw error
   }
 
-  return data
+  return data.result
+}
+
+async function sendTelegramMessage({
+  chatId,
+  text,
+  replyMarkup = null,
+  parseMode = 'HTML',
+  disableWebPagePreview = true,
+}) {
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: parseMode,
+    disable_web_page_preview: disableWebPagePreview,
+  }
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup
+  }
+
+  return telegramRequest('sendMessage', payload)
+}
+
+async function answerCallbackQuery({
+  callbackQueryId,
+  text = '',
+  showAlert = false,
+}) {
+  return telegramRequest('answerCallbackQuery', {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: showAlert,
+  })
+}
+
+async function editTelegramMessageReplyMarkup({
+  chatId,
+  messageId,
+  replyMarkup = null,
+}) {
+  return telegramRequest('editMessageReplyMarkup', {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: replyMarkup,
+  })
+}
+
+async function editTelegramMessageText({
+  chatId,
+  messageId,
+  text,
+  replyMarkup = null,
+  parseMode = 'HTML',
+  disableWebPagePreview = true,
+}) {
+  const payload = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: parseMode,
+    disable_web_page_preview: disableWebPagePreview,
+  }
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup
+  }
+
+  return telegramRequest('editMessageText', payload)
 }
 
 module.exports = {
   sendTelegramMessage,
+  answerCallbackQuery,
+  editTelegramMessageReplyMarkup,
+  editTelegramMessageText,
 }
