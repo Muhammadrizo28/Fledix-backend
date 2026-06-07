@@ -145,6 +145,7 @@ function parseCallbackData(data) {
   const text = String(data || '').trim()
   const parts = text.split(':')
 
+  // New format
   if (parts[0] === 'task_done') {
     return {
       type: 'task_done',
@@ -153,7 +154,24 @@ function parseCallbackData(data) {
     }
   }
 
+  // Old format support
+  if (parts[0] === 'done') {
+    return {
+      type: 'task_done',
+      taskId: parts[1],
+      doneDate: parts[2],
+    }
+  }
+
   if (parts[0] === 'task_extend') {
+    return {
+      type: 'task_extend',
+      taskId: parts[1],
+    }
+  }
+
+  // Old format support
+  if (parts[0] === 'extend') {
     return {
       type: 'task_extend',
       taskId: parts[1],
