@@ -16,6 +16,7 @@ const telegramRoutes = require('./routes/telegram.routes')
 const referralsRoutes = require('./routes/referrals.routes')
 const telegramUserRoutes = require('./routes/telegramUser.routes')
 const notificationsRoutes = require('./routes/notifications.routes')
+const focusRoutes = require('./routes/focus.routes')
 
 const {
   initNotificationScheduler,
@@ -51,6 +52,7 @@ app.use(express.json({ limit: '1mb' }))
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/referrals', referralsRoutes)
 app.use('/api/telegram-user', telegramUserRoutes)
+app.use('/api/focus', focusRoutes)
 
 app.use(
   rateLimit({
