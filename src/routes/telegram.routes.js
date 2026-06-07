@@ -218,19 +218,39 @@ async function getUserByTelegramId(telegramId) {
   return user
 }
 
-async function sendProRequiredMessage({ user, chatId }) {
+async function editMessageAsProRequired({ chatId, messageId, user }) {
+  if (!chatId || !messageId) return
+
   const text =
     user?.language === 'ru'
-      ? '🔒 Для этого действия нужна Pro подписка.'
-      : '🔒 Pro subscription is required for this action.'
+      ? '🔒 Для этого действия нужна Pro подписка.\n\nОткрой Fledix и перейди на Pro, чтобы использовать Telegram-кнопки.'
+      : '🔒 Pro subscription is required for this action.\n\nOpen Fledix and upgrade to Pro to use Telegram buttons.'
 
-  if (chatId) {
-    await sendTelegramMessage({
+  try {
+    await editTelegramMessageText({
       chatId,
+      messageId,
       text,
-    }).catch((error) => {
-      console.error('SEND_PRO_REQUIRED_MESSAGE_ERROR:', error.message)
+      replyMarkup: {
+        inline_keyboard: [],
+      },
     })
+
+    return
+  } catch (error) {
+    console.error('EDIT PRO REQUIRED MESSAGE TEXT ERROR:', error.message)
+  }
+
+  try {
+    await editTelegramMessageReplyMarkup({
+      chatId,
+      messageId,
+      replyMarkup: {
+        inline_keyboard: [],
+      },
+    })
+  } catch (error) {
+    console.error('EDIT PRO REQUIRED MESSAGE MARKUP ERROR:', error.message)
   }
 }
 
@@ -295,9 +315,8 @@ async function editTaskMessageAsDone({ chatId, messageId, user, updatedTask }) {
   }
 }
 
-async function handleTaskDoneCallback({ callbackQuery, parsed }) {
+async function handleTaskDoneCallback({ callbackQuery, parsed, user }) {
   const telegramId = String(callbackQuery.from?.id || '')
-
   const message = callbackQuery.message || {}
   const chatId = message.chat?.id
   const messageId = message.message_id
@@ -307,20 +326,6 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
     taskId: parsed.taskId,
     doneDate: parsed.doneDate,
   })
-
-  const user = await getUserByTelegramId(telegramId)
-
-  if (!user) {
-    if (chatId) {
-      await sendTelegramMessage({
-        chatId,
-        text:
-          'User not found. Open the app and enable Telegram notifications again.',
-      }).catch(() => null)
-    }
-
-    return
-  }
 
   const { taskId, doneDate } = parsed
 
@@ -434,7 +439,7 @@ async function handleTaskDoneCallback({ callbackQuery, parsed }) {
   })
 }
 
-async function handleTaskExtendCallback({ callbackQuery, parsed }) {
+async function handleTaskExtendCallback({ callbackQuery, parsed, user }) {
   const telegramId = String(callbackQuery.from?.id || '')
 
   const message = callbackQuery.message || {}
@@ -444,28 +449,6 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
     telegramId,
     taskId: parsed.taskId,
   })
-
-  const user = await getUserByTelegramId(telegramId)
-
-  if (!user) {
-    if (chatId) {
-      await sendTelegramMessage({
-        chatId,
-        text: 'User not found.',
-      }).catch(() => null)
-    }
-
-    return
-  }
-
-  if (!isActiveProUser(user)) {
-    await sendProRequiredMessage({
-      user,
-      chatId,
-    })
-
-    return
-  }
 
   const { taskId } = parsed
 
@@ -571,25 +554,12 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
   })
 }
 
-async function handleFocusStartCallback({ callbackQuery, parsed }) {
+async function handleFocusStartCallback({ callbackQuery, parsed, user }) {
   const callbackQueryId = callbackQuery.id
-  const telegramId = String(callbackQuery.from?.id || '')
 
   const message = callbackQuery.message || {}
   const chatId = message.chat?.id
   const messageId = message.message_id
-
-  const user = await getUserByTelegramId(telegramId)
-
-  if (!user) {
-    await safeAnswerCallbackQuery({
-      callbackQueryId,
-      text: 'User not found.',
-      showAlert: true,
-    })
-
-    return
-  }
 
   const mode = parsed.mode === 'break' ? 'break' : 'work'
   const durationSeconds = Math.max(1, Number(parsed.durationSeconds || 0))
@@ -627,15 +597,6 @@ async function handleFocusStartCallback({ callbackQuery, parsed }) {
     return
   }
 
-  await safeAnswerCallbackQuery({
-    callbackQueryId,
-    text:
-      user.language === 'ru'
-        ? 'Таймер запускается в приложении ✅'
-        : 'Timer will start in the app ✅',
-    showAlert: false,
-  })
-
   if (chatId && messageId) {
     const modeText = mode === 'work' ? 'work' : 'break'
 
@@ -672,40 +633,78 @@ async function handleCallbackQuery(callbackQuery) {
 
   console.log('TELEGRAM CALLBACK PARSED:', parsed)
 
-  if (parsed?.type === 'task_done') {
+  if (!parsed) {
+    const chatId = callbackQuery.message?.chat?.id
+
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text: 'Unknown action.',
+      }).catch(() => null)
+    }
+
+    return
+  }
+
+  const telegramId = String(callbackQuery.from?.id || '')
+  const user = await getUserByTelegramId(telegramId)
+
+  if (!user) {
+    const chatId = callbackQuery.message?.chat?.id
+
+    if (chatId) {
+      await sendTelegramMessage({
+        chatId,
+        text:
+          'User not found. Open the app and enable Telegram notifications again.',
+      }).catch(() => null)
+    }
+
+    return
+  }
+
+  const message = callbackQuery.message || {}
+  const chatId = message.chat?.id
+  const messageId = message.message_id
+
+  if (!isActiveProUser(user)) {
+    await editMessageAsProRequired({
+      chatId,
+      messageId,
+      user,
+    })
+
+    return
+  }
+
+  if (parsed.type === 'task_done') {
     await handleTaskDoneCallback({
       callbackQuery,
       parsed,
+      user,
     })
 
     return
   }
 
-  if (parsed?.type === 'task_extend') {
+  if (parsed.type === 'task_extend') {
     await handleTaskExtendCallback({
       callbackQuery,
       parsed,
+      user,
     })
 
     return
   }
 
-  if (parsed?.type === 'focus_start') {
+  if (parsed.type === 'focus_start') {
     await handleFocusStartCallback({
       callbackQuery,
       parsed,
+      user,
     })
 
     return
-  }
-
-  const chatId = callbackQuery.message?.chat?.id
-
-  if (chatId) {
-    await sendTelegramMessage({
-      chatId,
-      text: 'Unknown action.',
-    }).catch(() => null)
   }
 }
 
