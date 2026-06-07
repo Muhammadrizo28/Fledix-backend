@@ -1,18 +1,26 @@
 const express = require('express')
-const { supabase } = require('../config/supabase')
-const { requireAuth } = require('../middleware/requireAuth')
+
+const { supabase } = require('../services/supabaseClient')
+const { authMiddleware } = require('../middleware/auth.middleware')
 const { sendTelegramMessage } = require('../services/telegram.service')
-const {
-  rebuildSubscriptionNotifications,
-} = require('../services/notificationScheduler.service')
 
 const router = express.Router()
 
-router.get('/settings', requireAuth, async (req, res) => {
+router.get('/settings', authMiddleware, async (req, res) => {
   const { data: user, error } = await supabase
     .from('users')
     .select(
-      'id, telegram_id, timezone, language, notifications_enabled, notify_task_start, notify_task_end, notify_subscription_end, subscription_end_at'
+      `
+      id,
+      telegram_id,
+      timezone,
+      language,
+      notifications_enabled,
+      notify_task_start,
+      notify_task_end,
+      notify_subscription_end,
+      subscription_end_at
+      `
     )
     .eq('id', req.user.id)
     .single()
@@ -27,19 +35,19 @@ router.get('/settings', requireAuth, async (req, res) => {
   return res.json({
     success: true,
     settings: {
-      telegramId: user.telegram_id,
+      telegramId: user.telegram_id || '',
       timezone: user.timezone || 'Europe/London',
       language: user.language || 'en',
-      notificationsEnabled: Boolean(user.notifications_enabled),
-      notifyTaskStart: Boolean(user.notify_task_start),
-      notifyTaskEnd: Boolean(user.notify_task_end),
-      notifySubscriptionEnd: Boolean(user.notify_subscription_end),
-      subscriptionEndAt: user.subscription_end_at,
+      notificationsEnabled: user.notifications_enabled !== false,
+      notifyTaskStart: user.notify_task_start !== false,
+      notifyTaskEnd: user.notify_task_end !== false,
+      notifySubscriptionEnd: user.notify_subscription_end !== false,
+      subscriptionEndAt: user.subscription_end_at || null,
     },
   })
 })
 
-router.patch('/settings', requireAuth, async (req, res) => {
+router.patch('/settings', authMiddleware, async (req, res) => {
   const allowedTimezones = [
     'Europe/London',
     'Europe/Berlin',
@@ -48,7 +56,6 @@ router.patch('/settings', requireAuth, async (req, res) => {
   ]
 
   const body = req.body || {}
-
   const patch = {}
 
   if (typeof body.telegramId === 'string') {
@@ -86,7 +93,17 @@ router.patch('/settings', requireAuth, async (req, res) => {
     .update(patch)
     .eq('id', req.user.id)
     .select(
-      'id, telegram_id, timezone, language, notifications_enabled, notify_task_start, notify_task_end, notify_subscription_end, subscription_end_at'
+      `
+      id,
+      telegram_id,
+      timezone,
+      language,
+      notifications_enabled,
+      notify_task_start,
+      notify_task_end,
+      notify_subscription_end,
+      subscription_end_at
+      `
     )
     .single()
 
@@ -97,15 +114,22 @@ router.patch('/settings', requireAuth, async (req, res) => {
     })
   }
 
-  await rebuildSubscriptionNotifications(req.user.id)
-
   return res.json({
     success: true,
-    settings: data,
+    settings: {
+      telegramId: data.telegram_id || '',
+      timezone: data.timezone || 'Europe/London',
+      language: data.language || 'en',
+      notificationsEnabled: data.notifications_enabled !== false,
+      notifyTaskStart: data.notify_task_start !== false,
+      notifyTaskEnd: data.notify_task_end !== false,
+      notifySubscriptionEnd: data.notify_subscription_end !== false,
+      subscriptionEndAt: data.subscription_end_at || null,
+    },
   })
 })
 
-router.post('/test', requireAuth, async (req, res) => {
+router.post('/test', authMiddleware, async (req, res) => {
   const { data: user, error } = await supabase
     .from('users')
     .select('telegram_id, language')
