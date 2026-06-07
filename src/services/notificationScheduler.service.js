@@ -35,7 +35,12 @@ function parseDateParts(dateText) {
 function parseTimeParts(timeText) {
   if (!timeText) return null
 
-  const text = String(timeText).trim()
+  const rawText = String(timeText).trim()
+
+  // Берём только начало времени:
+  // "09:37 - --:--" => "09:37"
+  // "09:37 - 10:30" => "09:37"
+  const text = rawText.split('-')[0].trim()
 
   const amPmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
 
