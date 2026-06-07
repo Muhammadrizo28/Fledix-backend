@@ -2,14 +2,10 @@ const express = require('express')
 
 const { supabase } = require('../services/supabaseClient')
 
-const router = express.Router()
-
-const { supabase } = require('../services/supabaseClient')
-
 const {
+  sendTelegramMessage,
   answerCallbackQuery,
   editTelegramMessageReplyMarkup,
-  sendTelegramMessage,
 } = require('../services/telegram.service')
 
 const {
@@ -19,6 +15,8 @@ const {
 const {
   rebuildTaskNotifications,
 } = require('../services/notificationScheduler.service')
+
+const router = express.Router()
 
 function checkTelegramSecret(req, res, next) {
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET
@@ -75,83 +73,6 @@ async function savePendingReferral({ telegramId, referralCode }) {
     console.error('PENDING_REFERRAL_SAVE_ERROR:', error)
   }
 }
-
-async function sendTelegramMessage(chatId, text) {
-  if (!process.env.TELEGRAM_BOT_TOKEN) {
-    throw new Error('TELEGRAM_BOT_TOKEN_REQUIRED')
-  }
-
-  const response = await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-      }),
-    }
-  )
-
-  const data = await response.json().catch(() => null)
-
-  if (!response.ok || !data?.ok) {
-    throw new Error(data?.description || 'TELEGRAM_SEND_FAILED')
-  }
-
-  return data
-}
-
-router.post('/webhook', checkTelegramSecret, async (req, res) => {
-  try {
-    const update = req.body || {}
-
-    const message =
-      update.message ||
-      update.edited_message ||
-      update.callback_query?.message ||
-      null
-
-    const chatId = message?.chat?.id
-    const text = message?.text || ''
-    const telegramId = message?.from?.id || chatId
-
-    if (!chatId) {
-      return res.json({ ok: true })
-    }
-
-    if (text.startsWith('/start')) {
-      const startPayload = getStartPayload(text)
-
-      if (startPayload.startsWith('ref_')) {
-        await savePendingReferral({
-          telegramId,
-          referralCode: startPayload,
-        })
-
-        await sendTelegramMessage(
-          chatId,
-          'Welcome to Fledix ✅\n\nReferral saved. Now open the app to continue.'
-        )
-
-        return res.json({ ok: true })
-      }
-
-      await sendTelegramMessage(
-        chatId,
-        'Welcome to Fledix ✅\n\nOpen the app and enable notifications to receive task reminders here.'
-      )
-    }
-
-    return res.json({ ok: true })
-  } catch (error) {
-    console.error('Telegram webhook error:', error)
-
-    return res.json({ ok: true })
-  }
-})
 
 function isActiveProUser(user) {
   const expiresAt = user?.pro_expires_at || null
@@ -269,7 +190,7 @@ async function getUserByTelegramId(telegramId) {
       pro_plan
       `
     )
-    .eq('telegram_id', telegramId)
+    .eq('telegram_id', String(telegramId))
     .single()
 
   if (error || !user) {
@@ -297,6 +218,31 @@ async function sendProRequiredMessage({ user, chatId, callbackQueryId }) {
       text,
     }).catch(() => null)
   }
+}
+
+async function handleStartMessage({ chatId, telegramId, text }) {
+  const startPayload = getStartPayload(text)
+
+  if (startPayload.startsWith('ref_')) {
+    await savePendingReferral({
+      telegramId,
+      referralCode: startPayload,
+    })
+
+    await sendTelegramMessage({
+      chatId,
+      text:
+        'Welcome to Fledix ✅\n\nReferral saved. Now open the app to continue.',
+    })
+
+    return
+  }
+
+  await sendTelegramMessage({
+    chatId,
+    text:
+      'Welcome to Fledix ✅\n\nOpen the app and enable notifications to receive task reminders here.',
+  })
 }
 
 async function handleTaskDoneCallback({ callbackQuery, parsed }) {
@@ -581,37 +527,71 @@ async function handleTaskExtendCallback({ callbackQuery, parsed }) {
   }
 }
 
-router.post('/webhook', async (req, res) => {
+async function handleCallbackQuery(callbackQuery) {
+  const parsed = parseCallbackData(callbackQuery.data)
+
+  if (parsed?.type === 'task_done') {
+    await handleTaskDoneCallback({
+      callbackQuery,
+      parsed,
+    })
+
+    return
+  }
+
+  if (parsed?.type === 'task_extend') {
+    await handleTaskExtendCallback({
+      callbackQuery,
+      parsed,
+    })
+
+    return
+  }
+
+  await answerCallbackQuery({
+    callbackQueryId: callbackQuery.id,
+    text: 'Unknown action.',
+    showAlert: false,
+  }).catch(() => null)
+}
+
+router.post('/webhook', checkTelegramSecret, async (req, res) => {
   try {
     const update = req.body || {}
 
     if (update.callback_query) {
-      const parsed = parseCallbackData(update.callback_query.data)
+      await handleCallbackQuery(update.callback_query)
 
-      if (parsed?.type === 'task_done') {
-        await handleTaskDoneCallback({
-          callbackQuery: update.callback_query,
-          parsed,
-        })
-      }
-
-      if (parsed?.type === 'task_extend') {
-        await handleTaskExtendCallback({
-          callbackQuery: update.callback_query,
-          parsed,
-        })
-      }
+      return res.json({ ok: true })
     }
 
-    return res.json({
-      success: true,
-    })
+    const message = update.message || update.edited_message || null
+
+    if (!message) {
+      return res.json({ ok: true })
+    }
+
+    const chatId = message.chat?.id
+    const text = message.text || ''
+    const telegramId = message.from?.id || chatId
+
+    if (!chatId) {
+      return res.json({ ok: true })
+    }
+
+    if (text.startsWith('/start')) {
+      await handleStartMessage({
+        chatId,
+        telegramId,
+        text,
+      })
+    }
+
+    return res.json({ ok: true })
   } catch (error) {
     console.error('Telegram webhook error:', error)
 
-    return res.json({
-      success: true,
-    })
+    return res.json({ ok: true })
   }
 })
 
