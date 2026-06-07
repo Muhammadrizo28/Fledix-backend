@@ -13,13 +13,19 @@ const challengeProgressRoutes = require('./routes/challengeProgress.routes')
 const streakRoutes = require('./routes/streak.routes')
 const subscriptionRoutes = require('./routes/subscription.routes')
 const telegramRoutes = require('./routes/telegram.routes')
-
-const { errorHandler } = require('./middleware/errorHandler')
 const referralsRoutes = require('./routes/referrals.routes')
 const telegramUserRoutes = require('./routes/telegramUser.routes')
+const notificationsRoutes = require('./routes/notifications.routes')
+
+const {
+  initNotificationScheduler,
+} = require('./services/notificationScheduler.service')
+
+const { errorHandler } = require('./middleware/errorHandler')
 
 const app = express()
 const PORT = process.env.PORT || 3000
+
 app.set('trust proxy', 1)
 
 const corsOptions = {
@@ -37,8 +43,6 @@ const corsOptions = {
 }
 
 app.use(helmet())
-
-
 app.use(cors(corsOptions))
 app.options(/.*/, cors(corsOptions))
 
@@ -73,6 +77,7 @@ app.use('/api/friends', friendsRoutes)
 app.use('/api/challenge-progress', challengeProgressRoutes)
 app.use('/api/streak', streakRoutes)
 app.use('/api/subscription', subscriptionRoutes)
+app.use('/api/notifications', notificationsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({
@@ -85,4 +90,7 @@ app.use(errorHandler)
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`)
+
+  initNotificationScheduler()
+  console.log('Notification scheduler started')
 })

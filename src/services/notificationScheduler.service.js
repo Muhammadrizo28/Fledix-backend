@@ -36,10 +36,6 @@ function parseTimeParts(timeText) {
   if (!timeText) return null
 
   const rawText = String(timeText).trim()
-
-  // Берём только начало времени:
-  // "09:37 - --:--" => "09:37"
-  // "09:37 - 10:30" => "09:37"
   const text = rawText.split('-')[0].trim()
 
   const amPmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
@@ -424,6 +420,12 @@ async function markNotification(notificationId, patch) {
 }
 
 async function processNotification(notification) {
+  console.log('PROCESS NOTIFICATION START:', notification)
+
+  await markNotification(notification.id, {
+    status: NOTIFICATION_STATUS.PROCESSING,
+  })
+
   const { data: task, error: taskError } = await supabase
     .from('tasks')
     .select('id, user_id, title, date, time, repeat, frozen, completed')
@@ -436,6 +438,7 @@ async function processNotification(notification) {
       error: 'TASK_NOT_FOUND',
     })
 
+    console.log('PROCESS NOTIFICATION FAILED: TASK_NOT_FOUND')
     return
   }
 
@@ -459,6 +462,7 @@ async function processNotification(notification) {
       error: 'USER_NOT_FOUND',
     })
 
+    console.log('PROCESS NOTIFICATION FAILED: USER_NOT_FOUND')
     return
   }
 
@@ -474,14 +478,24 @@ async function processNotification(notification) {
       error: 'NOTIFICATION_NOT_ALLOWED',
     })
 
+    console.log('PROCESS NOTIFICATION FAILED: NOTIFICATION_NOT_ALLOWED', {
+      telegramId: user.telegram_id,
+      notificationsEnabled: user.notifications_enabled,
+      notifyTaskStart: user.notify_task_start,
+      frozen: task.frozen,
+      completed: task.completed,
+    })
+
     return
   }
 
-  await markNotification(notification.id, {
-    status: NOTIFICATION_STATUS.PROCESSING,
-  })
-
   try {
+    console.log('SENDING TELEGRAM TASK NOTIFICATION:', {
+      notificationId: notification.id,
+      chatId: user.telegram_id,
+      taskTitle: task.title,
+    })
+
     await sendTelegramMessage({
       chatId: user.telegram_id,
       text: getTaskStartMessage({ task, user }),
@@ -493,8 +507,12 @@ async function processNotification(notification) {
       error: null,
     })
 
+    console.log('TELEGRAM TASK NOTIFICATION SENT:', notification.id)
+
     await rebuildTaskNotifications(task.id)
   } catch (error) {
+    console.error('TELEGRAM TASK NOTIFICATION FAILED:', error.message)
+
     await markNotification(notification.id, {
       status: NOTIFICATION_STATUS.FAILED,
       error: error.message || 'TELEGRAM_SEND_FAILED',
@@ -503,12 +521,17 @@ async function processNotification(notification) {
 }
 
 async function processDueTaskNotifications() {
-  if (isProcessing) return
+  if (isProcessing) {
+    console.log('Notification processor already running')
+    return
+  }
 
   isProcessing = true
 
   try {
     const nowIso = new Date().toISOString()
+
+    console.log('Checking due notifications:', nowIso)
 
     const { data: notifications, error } = await supabase
       .from('task_notifications')
@@ -519,8 +542,11 @@ async function processDueTaskNotifications() {
       .limit(30)
 
     if (error) {
+      console.error('Due notifications query error:', error.message)
       throw error
     }
+
+    console.log('Due notifications count:', notifications?.length || 0)
 
     for (const notification of notifications || []) {
       await processNotification(notification)
@@ -532,41 +558,22 @@ async function processDueTaskNotifications() {
   }
 }
 
-async function rebuildAllPendingTaskNotifications() {
-  const { data: tasks, error } = await supabase
-    .from('tasks')
-    .select('id')
-    .not('time', 'is', null)
-    .neq('time', '')
-
-  if (error) {
-    console.error('Rebuild all task notifications error:', error.message)
+function initNotificationScheduler() {
+  if (schedulerInterval) {
+    console.log('Notification scheduler already running')
     return
   }
 
-  for (const task of tasks || []) {
-    const result = await rebuildTaskNotifications(task.id)
-
-    if (!result?.success) {
-      console.log('Rebuild existing task notification skipped:', result)
-    }
-  }
-}
-
-function initNotificationScheduler() {
-  if (schedulerInterval) return
-
-  rebuildAllPendingTaskNotifications().catch((error) => {
-    console.error('Initial task notification rebuild error:', error)
-  })
+  console.log('Notification scheduler init started')
 
   processDueTaskNotifications().catch((error) => {
     console.error('Initial task notification process error:', error)
   })
 
   schedulerInterval = setInterval(() => {
+    console.log('Notification scheduler tick')
     processDueTaskNotifications()
-  }, 30 * 1000)
+  }, 10 * 1000)
 }
 
 module.exports = {
