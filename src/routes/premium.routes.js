@@ -179,4 +179,83 @@ router.post('/purchase', authMiddleware, async (req, res) => {
   }
 })
 
+router.get('/bonus-claim', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+
+    const { data: claim, error } = await supabase
+      .from('premium_bonus_claims')
+      .select('id, plan_key, bonus_axion, available_at, status')
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .lte('available_at', new Date().toISOString())
+      .order('available_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'BONUS_CLAIM_LOAD_FAILED',
+      })
+    }
+
+    return res.json({
+      success: true,
+      claim: claim
+        ? {
+            id: claim.id,
+            planKey: claim.plan_key,
+            bonusAxion: Number(claim.bonus_axion || 0),
+            availableAt: claim.available_at,
+            status: claim.status,
+          }
+        : null,
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'BONUS_CLAIM_LOAD_FAILED',
+    })
+  }
+})
+
+router.post('/bonus-claim/:claimId/claim', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const { claimId } = req.params
+
+    const { data, error } = await supabase.rpc('claim_premium_bonus', {
+      p_user_id: userId,
+      p_claim_id: claimId,
+    })
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'BONUS_CLAIM_FAILED',
+      })
+    }
+
+    if (!data?.success) {
+      return res.status(400).json({
+        success: false,
+        error: data?.error || 'BONUS_CLAIM_FAILED',
+        availableAt: data?.availableAt || null,
+      })
+    }
+
+    return res.json({
+      success: true,
+      bonus: data.bonus,
+      balances: data.balances,
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'BONUS_CLAIM_FAILED',
+    })
+  }
+})
+
 module.exports = router
