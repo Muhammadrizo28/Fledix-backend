@@ -9,6 +9,9 @@ const router = express.Router()
 const MODE_WORK = 'work'
 const MODE_BREAK = 'break'
 
+const MIN_FOCUS_NOTIFICATION_SECONDS = 30
+const FOCUS_NOTIFICATION_COOLDOWN_SECONDS = 30
+
 function normalizeMode(value) {
   return value === MODE_BREAK ? MODE_BREAK : MODE_WORK
 }
@@ -17,9 +20,19 @@ function getNextMode(mode) {
   return mode === MODE_WORK ? MODE_BREAK : MODE_WORK
 }
 
+function getSafeDuration(value, fallback) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) {
+    return fallback
+  }
+
+  return Math.max(MIN_FOCUS_NOTIFICATION_SECONDS, Math.ceil(number))
+}
+
 function getDurationForMode({ mode, workSeconds, breakSeconds }) {
-  const safeWorkSeconds = Math.max(1, Number(workSeconds || 25 * 60))
-  const safeBreakSeconds = Math.max(1, Number(breakSeconds || 5 * 60))
+  const safeWorkSeconds = getSafeDuration(workSeconds, 25 * 60)
+  const safeBreakSeconds = getSafeDuration(breakSeconds, 5 * 60)
 
   return mode === MODE_WORK ? safeWorkSeconds : safeBreakSeconds
 }
@@ -48,6 +61,45 @@ function buildStartButtonText({ user, nextMode }) {
     : '▶️ Start break time'
 }
 
+async function hasRecentFocusNotification(userId) {
+  const sinceIso = new Date(
+    Date.now() - FOCUS_NOTIFICATION_COOLDOWN_SECONDS * 1000
+  ).toISOString()
+
+  const { data, error } = await supabase
+    .from('focus_timer_notification_logs')
+    .select('id')
+    .eq('user_id', userId)
+    .gte('created_at', sinceIso)
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    console.error('FOCUS_COOLDOWN_CHECK_ERROR:', error.message)
+    return false
+  }
+
+  return Boolean(data)
+}
+
+async function saveFocusNotificationLog({
+  userId,
+  endedMode,
+  nextMode,
+  durationSeconds,
+}) {
+  const { error } = await supabase.from('focus_timer_notification_logs').insert({
+    user_id: userId,
+    ended_mode: endedMode,
+    next_mode: nextMode,
+    duration_seconds: durationSeconds,
+  })
+
+  if (error) {
+    console.error('FOCUS_NOTIFICATION_LOG_INSERT_ERROR:', error.message)
+  }
+}
+
 router.post('/timer-ended', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id
@@ -55,14 +107,46 @@ router.post('/timer-ended', authMiddleware, async (req, res) => {
     const endedMode = normalizeMode(req.body?.endedMode)
     const nextMode = normalizeMode(req.body?.nextMode || getNextMode(endedMode))
 
-    const workSeconds = Number(req.body?.workSeconds || 25 * 60)
-    const breakSeconds = Number(req.body?.breakSeconds || 5 * 60)
+    const workSeconds = getSafeDuration(req.body?.workSeconds, 25 * 60)
+    const breakSeconds = getSafeDuration(req.body?.breakSeconds, 5 * 60)
+
+    const fallbackEndedDurationSeconds = getDurationForMode({
+      mode: endedMode,
+      workSeconds,
+      breakSeconds,
+    })
+
+    const endedDurationSeconds = Math.max(
+      0,
+      Math.ceil(Number(req.body?.endedDurationSeconds || fallbackEndedDurationSeconds))
+    )
 
     const nextDurationSeconds = getDurationForMode({
       mode: nextMode,
       workSeconds,
       breakSeconds,
     })
+
+    if (endedDurationSeconds < MIN_FOCUS_NOTIFICATION_SECONDS) {
+      return res.json({
+        success: true,
+        notificationSent: false,
+        reason: 'FOCUS_TIMER_TOO_SHORT',
+        minSeconds: MIN_FOCUS_NOTIFICATION_SECONDS,
+        endedDurationSeconds,
+      })
+    }
+
+    const hasCooldown = await hasRecentFocusNotification(userId)
+
+    if (hasCooldown) {
+      return res.json({
+        success: true,
+        notificationSent: false,
+        reason: 'FOCUS_NOTIFICATION_COOLDOWN',
+        cooldownSeconds: FOCUS_NOTIFICATION_COOLDOWN_SECONDS,
+      })
+    }
 
     const { data: user, error: userError } = await supabase
       .from('users')
@@ -121,11 +205,19 @@ router.post('/timer-ended', authMiddleware, async (req, res) => {
       },
     })
 
+    await saveFocusNotificationLog({
+      userId,
+      endedMode,
+      nextMode,
+      durationSeconds: endedDurationSeconds,
+    })
+
     return res.json({
       success: true,
       notificationSent: true,
       endedMode,
       nextMode,
+      endedDurationSeconds,
       nextDurationSeconds,
     })
   } catch (error) {
@@ -170,7 +262,10 @@ router.get('/command', authMiddleware, async (req, res) => {
       command: {
         id: command.id,
         mode: command.mode,
-        durationSeconds: Number(command.duration_seconds || 0),
+        durationSeconds: Math.max(
+          MIN_FOCUS_NOTIFICATION_SECONDS,
+          Number(command.duration_seconds || 0)
+        ),
         createdAt: command.created_at,
       },
     })
