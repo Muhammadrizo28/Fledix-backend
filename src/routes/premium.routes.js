@@ -1,6 +1,11 @@
 const express = require('express')
 
 const { supabase } = require('../services/supabaseClient')
+const { authMiddleware } = require('../middleware/auth.middleware')
+
+const {
+  rebuildSubscriptionNotifications,
+} = require('../services/notificationScheduler.service')
 
 const router = express.Router()
 
@@ -89,6 +94,87 @@ router.get('/prices', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || 'PREMIUM_PRICES_LOAD_FAILED',
+    })
+  }
+})
+
+router.post('/purchase', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const body = req.body || {}
+
+    const planId = String(body.planId || '').trim()
+    const methodId = String(body.methodId || '').trim()
+
+    if (!planId) {
+      return res.status(400).json({
+        success: false,
+        error: 'PLAN_REQUIRED',
+      })
+    }
+
+    if (!methodId) {
+      return res.status(400).json({
+        success: false,
+        error: 'PAYMENT_METHOD_REQUIRED',
+      })
+    }
+
+    if (methodId === 'stars') {
+      return res.status(400).json({
+        success: false,
+        error: 'STARS_PAYMENT_NOT_READY',
+      })
+    }
+
+    if (methodId !== 'axion' && methodId !== 'friends') {
+      return res.status(400).json({
+        success: false,
+        error: 'PAYMENT_METHOD_NOT_SUPPORTED',
+      })
+    }
+
+    const { data, error } = await supabase.rpc(
+      'purchase_premium_with_balance',
+      {
+        p_user_id: userId,
+        p_plan_key: planId,
+        p_payment_type: methodId,
+      }
+    )
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'PREMIUM_PURCHASE_FAILED',
+      })
+    }
+
+    if (!data?.success) {
+      return res.status(400).json({
+        success: false,
+        error: data?.error || 'PREMIUM_PURCHASE_FAILED',
+        required: data?.required || null,
+        current: data?.current || null,
+      })
+    }
+
+    await rebuildSubscriptionNotifications(userId).catch((error) => {
+      console.error('PREMIUM_SUBSCRIPTION_NOTIFICATION_REBUILD_ERROR:', {
+        message: error.message,
+      })
+    })
+
+    return res.json({
+      success: true,
+      purchase: data.purchase,
+      subscription: data.subscription,
+      balances: data.balances,
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'PREMIUM_PURCHASE_FAILED',
     })
   }
 })
