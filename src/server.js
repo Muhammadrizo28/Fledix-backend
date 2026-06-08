@@ -18,6 +18,7 @@ const telegramUserRoutes = require('./routes/telegramUser.routes')
 const notificationsRoutes = require('./routes/notifications.routes')
 const focusRoutes = require('./routes/focus.routes')
 const premiumRoutes = require('./routes/premium.routes')
+const userSettingsRoutes = require('./routes/userSettings.routes')
 
 const {
   initNotificationScheduler,
@@ -54,6 +55,7 @@ app.use('/api/telegram', telegramRoutes)
 app.use('/api/referrals', referralsRoutes)
 app.use('/api/telegram-user', telegramUserRoutes)
 app.use('/api/focus', focusRoutes)
+app.use('/api/user-settings', userSettingsRoutes)
 
 app.use(
   rateLimit({
