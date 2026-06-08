@@ -3,10 +3,6 @@ const express = require('express')
 const { supabase } = require('../services/supabaseClient')
 const { authMiddleware } = require('../middleware/auth.middleware')
 
-const {
-  rebuildSubscriptionNotifications,
-} = require('../services/notificationScheduler.service')
-
 const router = express.Router()
 
 router.get('/prices', async (req, res) => {
@@ -65,9 +61,7 @@ router.get('/prices', async (req, res) => {
 
     for (const price of prices || []) {
       const current = pricesByPlanId.get(price.plan_id) || {}
-
       current[price.payment_type] = Number(price.amount || 0)
-
       pricesByPlanId.set(price.plan_id, current)
     }
 
@@ -91,6 +85,8 @@ router.get('/prices', async (req, res) => {
       plans: serializedPlans,
     })
   } catch (error) {
+    console.error('PREMIUM_PRICES_ERROR:', error)
+
     return res.status(500).json({
       success: false,
       error: error.message || 'PREMIUM_PRICES_LOAD_FAILED',
@@ -144,13 +140,17 @@ router.post('/purchase', authMiddleware, async (req, res) => {
     )
 
     if (error) {
+      console.error('PREMIUM_PURCHASE_RPC_ERROR:', error)
+
       return res.status(500).json({
         success: false,
-        error: error.message || 'PREMIUM_PURCHASE_FAILED',
+        error: error.message || 'PREMIUM_PURCHASE_RPC_FAILED',
       })
     }
 
-    if (!data?.success) {
+    console.log('PREMIUM_PURCHASE_RPC_RESULT:', data)
+
+    if (!data || data.success !== true) {
       return res.status(400).json({
         success: false,
         error: data?.error || 'PREMIUM_PURCHASE_FAILED',
@@ -159,22 +159,22 @@ router.post('/purchase', authMiddleware, async (req, res) => {
       })
     }
 
-    await rebuildSubscriptionNotifications(userId).catch((error) => {
-      console.error('PREMIUM_SUBSCRIPTION_NOTIFICATION_REBUILD_ERROR:', {
-        message: error.message,
-      })
-    })
-
     return res.json({
       success: true,
-      purchase: data.purchase,
-      subscription: data.subscription,
-      balances: data.balances,
+      purchase: data.purchase || null,
+      subscription: data.subscription || null,
+      balances: data.balances || null,
+      bonusClaim: data.bonusClaim || null,
     })
   } catch (error) {
+    console.error('PREMIUM_PURCHASE_ROUTE_ERROR:', {
+      message: error.message,
+      stack: error.stack,
+    })
+
     return res.status(500).json({
       success: false,
-      error: error.message || 'PREMIUM_PURCHASE_FAILED',
+      error: error.message || 'PREMIUM_PURCHASE_ROUTE_FAILED',
     })
   }
 })
@@ -194,6 +194,8 @@ router.get('/bonus-claim', authMiddleware, async (req, res) => {
       .maybeSingle()
 
     if (error) {
+      console.error('BONUS_CLAIM_LOAD_ERROR:', error)
+
       return res.status(500).json({
         success: false,
         error: error.message || 'BONUS_CLAIM_LOAD_FAILED',
@@ -213,6 +215,8 @@ router.get('/bonus-claim', authMiddleware, async (req, res) => {
         : null,
     })
   } catch (error) {
+    console.error('BONUS_CLAIM_ROUTE_ERROR:', error)
+
     return res.status(500).json({
       success: false,
       error: error.message || 'BONUS_CLAIM_LOAD_FAILED',
@@ -231,13 +235,15 @@ router.post('/bonus-claim/:claimId/claim', authMiddleware, async (req, res) => {
     })
 
     if (error) {
+      console.error('BONUS_CLAIM_RPC_ERROR:', error)
+
       return res.status(500).json({
         success: false,
-        error: error.message || 'BONUS_CLAIM_FAILED',
+        error: error.message || 'BONUS_CLAIM_RPC_FAILED',
       })
     }
 
-    if (!data?.success) {
+    if (!data || data.success !== true) {
       return res.status(400).json({
         success: false,
         error: data?.error || 'BONUS_CLAIM_FAILED',
@@ -247,13 +253,18 @@ router.post('/bonus-claim/:claimId/claim', authMiddleware, async (req, res) => {
 
     return res.json({
       success: true,
-      bonus: data.bonus,
-      balances: data.balances,
+      bonus: data.bonus || null,
+      balances: data.balances || null,
     })
   } catch (error) {
+    console.error('BONUS_CLAIM_ROUTE_ERROR:', {
+      message: error.message,
+      stack: error.stack,
+    })
+
     return res.status(500).json({
       success: false,
-      error: error.message || 'BONUS_CLAIM_FAILED',
+      error: error.message || 'BONUS_CLAIM_ROUTE_FAILED',
     })
   }
 })
