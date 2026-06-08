@@ -17,6 +17,7 @@ const referralsRoutes = require('./routes/referrals.routes')
 const telegramUserRoutes = require('./routes/telegramUser.routes')
 const notificationsRoutes = require('./routes/notifications.routes')
 const focusRoutes = require('./routes/focus.routes')
+const premiumRoutes = require('./routes/premium.routes')
 
 const {
   initNotificationScheduler,
@@ -80,6 +81,7 @@ app.use('/api/challenge-progress', challengeProgressRoutes)
 app.use('/api/streak', streakRoutes)
 app.use('/api/subscription', subscriptionRoutes)
 app.use('/api/notifications', notificationsRoutes)
+app.use('/api/premium', premiumRoutes)
 
 app.use((req, res) => {
   res.status(404).json({
