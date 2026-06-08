@@ -40,13 +40,13 @@ function getDurationForMode({ mode, workSeconds, breakSeconds }) {
 function buildTimerEndedText({ user, endedMode }) {
   if (user.language === 'ru') {
     return endedMode === MODE_WORK
-      ? '⏰ Рабочий таймер закончился.'
+      ? '⏰ Рабочее время закончился.'
       : '☕ Перерыв закончился.'
   }
 
   return endedMode === MODE_WORK
-    ? '⏰ Work timer finished.'
-    : '☕ Break timer finished.'
+    ? '⏰ Work time finished.'
+    : '☕ Break time finished.'
 }
 
 function buildStartButtonText({ user, nextMode }) {
@@ -155,7 +155,8 @@ router.post('/timer-ended', authMiddleware, async (req, res) => {
         id,
         telegram_id,
         language,
-        notifications_enabled
+        notifications_enabled,
+        notify_focus_timer
         `
       )
       .eq('id', userId)
@@ -183,6 +184,14 @@ router.post('/timer-ended', authMiddleware, async (req, res) => {
         reason: 'NOTIFICATIONS_DISABLED',
       })
     }
+
+    if (user.notify_focus_timer === false) {
+  return res.json({
+    success: true,
+    notificationSent: false,
+    reason: 'FOCUS_TIMER_NOTIFICATIONS_DISABLED',
+  })
+}
 
     await sendTelegramMessage({
       chatId: user.telegram_id,
