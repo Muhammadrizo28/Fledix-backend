@@ -3,6 +3,11 @@ const express = require('express')
 const { supabase } = require('../services/supabaseClient')
 
 const {
+  answerPreCheckoutQuery,
+  activateStarsPayment,
+} = require('../services/telegramStars.service')
+
+const {
   sendTelegramMessage,
   answerCallbackQuery,
   editTelegramMessageReplyMarkup,
@@ -713,31 +718,93 @@ router.post('/webhook', async (req, res) => {
 
   console.log('TELEGRAM WEBHOOK UPDATE:', JSON.stringify(update))
 
-  if (update.callback_query) {
-    const callbackQuery = update.callback_query
-
-    res.json({
-      ok: true,
-      handled: 'callback_query',
-    })
-
-    handleCallbackQuery(callbackQuery).catch((error) => {
-      console.error('TELEGRAM CALLBACK HANDLE ERROR:', {
-        message: error.message,
-        stack: error.stack,
-      })
-    })
-
-    return
-  }
-
   try {
+    if (update.pre_checkout_query) {
+      const query = update.pre_checkout_query
+      const payload = query.invoice_payload || ''
+
+      console.log('TELEGRAM PRE CHECKOUT QUERY:', {
+        id: query.id,
+        payload,
+        currency: query.currency,
+        totalAmount: query.total_amount,
+      })
+
+      if (!payload.startsWith('premium_stars:')) {
+        await answerPreCheckoutQuery({
+          preCheckoutQueryId: query.id,
+          ok: false,
+          errorMessage: 'Invalid payment payload',
+        })
+
+        return res.json({
+          ok: true,
+          handled: 'pre_checkout_invalid_payload',
+        })
+      }
+
+      await answerPreCheckoutQuery({
+        preCheckoutQueryId: query.id,
+        ok: true,
+      })
+
+      return res.json({
+        ok: true,
+        handled: 'pre_checkout_query',
+      })
+    }
+
+    if (update.callback_query) {
+      const callbackQuery = update.callback_query
+
+      res.json({
+        ok: true,
+        handled: 'callback_query',
+      })
+
+      handleCallbackQuery(callbackQuery).catch((error) => {
+        console.error('TELEGRAM CALLBACK HANDLE ERROR:', {
+          message: error.message,
+          stack: error.stack,
+        })
+      })
+
+      return
+    }
+
     const message = update.message || update.edited_message || null
 
     if (!message) {
       return res.json({
         ok: true,
         handled: 'empty',
+      })
+    }
+
+    if (message.successful_payment) {
+      const payment = message.successful_payment
+
+      console.log('TELEGRAM SUCCESSFUL PAYMENT:', {
+        payload: payment.invoice_payload,
+        currency: payment.currency,
+        totalAmount: payment.total_amount,
+        telegramPaymentChargeId: payment.telegram_payment_charge_id,
+        providerPaymentChargeId: payment.provider_payment_charge_id,
+      })
+
+      const result = await activateStarsPayment({
+        payload: payment.invoice_payload,
+        telegramPaymentChargeId: payment.telegram_payment_charge_id,
+        providerPaymentChargeId: payment.provider_payment_charge_id,
+      })
+
+      if (!result.success) {
+        console.error('TELEGRAM STARS ACTIVATION FAILED:', result)
+      }
+
+      return res.json({
+        ok: true,
+        handled: 'successful_payment',
       })
     }
 

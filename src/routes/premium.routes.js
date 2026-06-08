@@ -2,6 +2,9 @@ const express = require('express')
 
 const { supabase } = require('../services/supabaseClient')
 const { authMiddleware } = require('../middleware/auth.middleware')
+const {
+  createStarsInvoiceLink,
+} = require('../services/telegramStars.service')
 
 const router = express.Router()
 
@@ -265,6 +268,39 @@ router.post('/bonus-claim/:claimId/claim', authMiddleware, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || 'BONUS_CLAIM_ROUTE_FAILED',
+    })
+  }
+})
+
+
+router.post('/stars/invoice', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const { planId } = req.body || {}
+
+    if (!planId) {
+      return res.status(400).json({
+        success: false,
+        error: 'PLAN_REQUIRED',
+      })
+    }
+
+    const result = await createStarsInvoiceLink({
+      userId,
+      planId: String(planId).trim(),
+    })
+
+    if (!result.success) {
+      return res.status(400).json(result)
+    }
+
+    return res.json(result)
+  } catch (error) {
+    console.error('STARS_INVOICE_CREATE_ERROR:', error)
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'STARS_INVOICE_CREATE_FAILED',
     })
   }
 })
