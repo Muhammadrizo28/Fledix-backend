@@ -6,6 +6,37 @@ const { sendTelegramMessage } = require('../services/telegram.service')
 
 const router = express.Router()
 
+const SETTINGS_UPDATE_COOLDOWN_MS = 1200
+const TEST_NOTIFICATION_COOLDOWN_MS = 30 * 1000
+
+const notificationCooldowns = new Map()
+
+function getCooldownKey(userId, action) {
+  return `${userId}:${action}`
+}
+
+function getRemainingCooldownMs({ userId, action, cooldownMs }) {
+  const key = getCooldownKey(userId, action)
+  const lastTime = notificationCooldowns.get(key)
+
+  if (!lastTime) return 0
+
+  const passedMs = Date.now() - lastTime
+  const remainingMs = cooldownMs - passedMs
+
+  return remainingMs > 0 ? remainingMs : 0
+}
+
+function setCooldown({ userId, action }) {
+  const key = getCooldownKey(userId, action)
+
+  notificationCooldowns.set(key, Date.now())
+
+  setTimeout(() => {
+    notificationCooldowns.delete(key)
+  }, 60 * 1000)
+}
+
 function serializeSettings(user) {
   return {
     telegramId: user.telegram_id || '',
@@ -65,6 +96,25 @@ router.get('/settings', authMiddleware, async (req, res) => {
 
 router.patch('/settings', authMiddleware, async (req, res) => {
   try {
+
+    const remainingMs = getRemainingCooldownMs({
+  userId: req.user.id,
+  action: 'settings_update',
+  cooldownMs: SETTINGS_UPDATE_COOLDOWN_MS,
+})
+
+if (remainingMs > 0) {
+  return res.status(429).json({
+    success: false,
+    error: 'NOTIFICATION_SETTINGS_RATE_LIMITED',
+    retryAfterSeconds: Math.ceil(remainingMs / 1000),
+  })
+}
+
+setCooldown({
+  userId: req.user.id,
+  action: 'settings_update',
+})
     const body = req.body || {}
     const patch = {}
 
@@ -136,6 +186,26 @@ router.patch('/settings', authMiddleware, async (req, res) => {
 
 router.post('/test', authMiddleware, async (req, res) => {
   try {
+
+    const remainingMs = getRemainingCooldownMs({
+  userId: req.user.id,
+  action: 'test_notification',
+  cooldownMs: TEST_NOTIFICATION_COOLDOWN_MS,
+})
+
+if (remainingMs > 0) {
+  return res.status(429).json({
+    success: false,
+    error: 'TEST_NOTIFICATION_RATE_LIMITED',
+    retryAfterSeconds: Math.ceil(remainingMs / 1000),
+  })
+}
+
+setCooldown({
+  userId: req.user.id,
+  action: 'test_notification',
+})
+
     const { data: user, error } = await supabase
       .from('users')
       .select('telegram_id, language, notifications_enabled')
