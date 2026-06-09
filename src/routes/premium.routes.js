@@ -8,6 +8,86 @@ const {
 
 const router = express.Router()
 
+
+
+async function refreshUserProSubscription(userId) {
+  const { data: user, error: userError } = await supabase
+    .from('users')
+    .select(
+      `
+      id,
+      pro_subscription,
+      pro_expires_at,
+      pro_plan,
+      subscription_end_at
+      `
+    )
+    .eq('id', userId)
+    .single()
+
+  if (userError || !user) {
+    return {
+      success: false,
+      error: userError?.message || 'USER_NOT_FOUND',
+    }
+  }
+
+  const expiresAt = user.pro_expires_at ? new Date(user.pro_expires_at) : null
+  const isExpired = !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()
+
+  if (user.pro_subscription && isExpired) {
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update({
+        pro_subscription: false,
+        pro_plan: null,
+        subscription_end_at: user.pro_expires_at || user.subscription_end_at || null,
+      })
+      .eq('id', userId)
+      .select(
+        `
+        id,
+        pro_subscription,
+        pro_expires_at,
+        pro_plan,
+        subscription_end_at
+        `
+      )
+      .single()
+
+    if (updateError || !updatedUser) {
+      return {
+        success: false,
+        error: updateError?.message || 'SUBSCRIPTION_REFRESH_FAILED',
+      }
+    }
+
+    return {
+      success: true,
+      subscription: {
+        proSubscription: false,
+        proExpiresAt: updatedUser.pro_expires_at,
+        proPlan: null,
+      },
+    }
+  }
+
+  const isActive =
+    Boolean(user.pro_subscription) &&
+    expiresAt &&
+    !Number.isNaN(expiresAt.getTime()) &&
+    expiresAt > new Date()
+
+  return {
+    success: true,
+    subscription: {
+      proSubscription: isActive,
+      proExpiresAt: user.pro_expires_at,
+      proPlan: isActive ? user.pro_plan : null,
+    },
+  }
+}
+
 router.get('/prices', async (req, res) => {
   try {
     const { data: plans, error: plansError } = await supabase
@@ -178,6 +258,37 @@ router.post('/purchase', authMiddleware, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || 'PREMIUM_PURCHASE_ROUTE_FAILED',
+    })
+  }
+})
+
+
+router.get('/subscription', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id
+
+    const result = await refreshUserProSubscription(userId)
+
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        error: result.error || 'SUBSCRIPTION_CHECK_FAILED',
+      })
+    }
+
+    return res.json({
+      success: true,
+      subscription: result.subscription,
+    })
+  } catch (error) {
+    console.error('SUBSCRIPTION_CHECK_ROUTE_ERROR:', {
+      message: error.message,
+      stack: error.stack,
+    })
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'SUBSCRIPTION_CHECK_FAILED',
     })
   }
 })
