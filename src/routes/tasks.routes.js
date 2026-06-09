@@ -69,15 +69,85 @@ async function getUserSubscription(userId) {
   }
 }
 
+function getTodayDateMs() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+
+  const year = Number(parts.find((part) => part.type === 'year')?.value)
+  const month = Number(parts.find((part) => part.type === 'month')?.value)
+  const day = Number(parts.find((part) => part.type === 'day')?.value)
+
+  return Date.UTC(year, month - 1, day)
+}
+
+function parseTaskDateMs(value) {
+  if (!value || typeof value !== 'string') return null
+
+  const dateValue = value.trim()
+
+  if (!dateValue) return null
+
+  // dd/mm/yyyy
+  const ukMatch = dateValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+
+  if (ukMatch) {
+    const day = Number(ukMatch[1])
+    const month = Number(ukMatch[2])
+    const year = Number(ukMatch[3])
+
+    return Date.UTC(year, month - 1, day)
+  }
+
+  // yyyy-mm-dd
+  const isoMatch = dateValue.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+
+  if (isoMatch) {
+    const year = Number(isoMatch[1])
+    const month = Number(isoMatch[2])
+    const day = Number(isoMatch[3])
+
+    return Date.UTC(year, month - 1, day)
+  }
+
+  const parsed = new Date(dateValue)
+
+  if (Number.isNaN(parsed.getTime())) return null
+
+  return Date.UTC(
+    parsed.getUTCFullYear(),
+    parsed.getUTCMonth(),
+    parsed.getUTCDate()
+  )
+}
+
+function isCurrentOrFutureTask(task, todayMs) {
+  const startDateMs = parseTaskDateMs(task.date)
+  const endDateMs = parseTaskDateMs(task.end_date)
+
+  // если есть end_date и он уже в прошлом — не считаем
+  if (endDateMs !== null && endDateMs < todayMs) {
+    return false
+  }
+
+  // если обычная задача без даты — считаем активной
+  if (startDateMs === null) {
+    return true
+  }
+
+  // считаем только сегодня и будущее
+  return startDateMs >= todayMs
+}
+
 async function getRegularTaskCount(userId) {
-  const { count, error } = await supabase
+  const { data: tasks, error } = await supabase
     .from('tasks')
-    .select('id', {
-      count: 'exact',
-      head: true,
-    })
+    .select('id, date, end_date, challenge_type')
     .eq('user_id', userId)
-    .or('challenge_type.is.null,challenge_type.neq.friend')
+    .is('challenge_type', null)
 
   if (error) {
     return {
@@ -87,9 +157,15 @@ async function getRegularTaskCount(userId) {
     }
   }
 
+  const todayMs = getTodayDateMs()
+
+  const activeRegularTasks = (tasks || []).filter((task) =>
+    isCurrentOrFutureTask(task, todayMs)
+  )
+
   return {
     success: true,
-    count: Number(count || 0),
+    count: activeRegularTasks.length,
   }
 }
 
